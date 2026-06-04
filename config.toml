@@ -1,0 +1,24 @@
+# COMSOL Clippy configuration. All paths are relative to this file's directory
+# unless absolute. Edit and re-run setup / `main.py ingest` to apply.
+
+[embedding]
+model = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+dim = 1536
+max_seq_tokens = 8192          # model supports 32k; capped for memory/speed
+batch_size = 8                 # auto-halves on CUDA OOM down to 1
+# Task description used for the query instruction prefix (documents get none).
+query_instruction = "Given a question about COMSOL Multiphysics, retrieve relevant passages from the user manuals that answer it"
+
+[chunking]
+chunk_tokens = 512
+chunk_overlap_tokens = 64
+min_chunk_tokens = 64
+
+[paths]
+source_dir = "source"          # input PDFs
+data_dir = "data"              # holds chroma/ and manifest.json
+chroma_subdir = "chroma"
+manifest_name = "manifest.json"
+
+[store]
+collection = "comsol_docs"

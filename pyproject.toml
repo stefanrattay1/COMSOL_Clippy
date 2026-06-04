@@ -1,0 +1,27 @@
+[project]
+name = "comsol-clippy"
+version = "0.1.0"
+description = "Local RAG vectorstore + MCP server over COMSOL manuals (gte-Qwen2-1.5B-instruct + ChromaDB)"
+requires-python = ">=3.10"
+dependencies = [
+    # torch is installed separately by the setup scripts (CUDA wheel in WSL, CPU on Windows).
+    # transformers/sentence-transformers are pinned to versions compatible with torch 2.5.x:
+    # newer releases reference torch.float8_e8m0fnu (torch >=2.7) and fail to import.
+    "sentence-transformers>=3.0,<3.4",
+    "transformers>=4.44,<4.46",
+    "chromadb>=0.5",
+    "pymupdf>=1.24",
+    "mcp>=1.2",
+    "typer>=0.12",
+    "tomli>=2.0 ; python_version < '3.11'",
+]
+
+[project.scripts]
+comsol-clippy = "comsol_clippy.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["comsol_clippy"]
