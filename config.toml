@@ -13,6 +13,9 @@ instruction_format = "qwen-instruct"
 # Task description used for the query instruction prefix (documents get none).
 # Only used when instruction_format = "qwen-instruct".
 query_instruction = "Given a question about COMSOL Multiphysics, retrieve relevant passages from the user manuals that answer it"
+# Bounded LRU cache of query-text -> embedding vector in the long-lived daemon, so a
+# repeated/iterated question skips re-running the model. 0 disables caching.
+cache_size = 256
 
 [chunking]
 chunk_tokens = 512

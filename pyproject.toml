@@ -3,18 +3,24 @@ name = "comsol-clippy"
 version = "0.1.0"
 description = "Local RAG vectorstore + MCP server over COMSOL manuals (gte-Qwen2-1.5B-instruct + ChromaDB)"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
 dependencies = [
     # torch is installed separately by the setup scripts (CUDA wheel in WSL, CPU on Windows).
     # transformers/sentence-transformers are pinned to versions compatible with torch 2.5.x:
     # newer releases reference torch.float8_e8m0fnu (torch >=2.7) and fail to import.
     "sentence-transformers>=3.0,<3.4",
     "transformers>=4.44,<4.46",
-    "chromadb>=0.5",
-    "pymupdf>=1.24",
-    "mcp>=1.2",
-    "typer>=0.12",
+    # Conservative upper bounds guard against a surprise major break; they're set
+    # above the versions currently in use (chromadb 1.x, pymupdf/mcp 1.x, typer 0.x).
+    "chromadb>=0.5,<2",
+    "pymupdf>=1.24,<2",
+    "mcp>=1.2,<2",
+    "typer>=0.12,<1",
     "tomli>=2.0 ; python_version < '3.11'",
 ]
+
+[project.urls]
+Repository = "https://github.com/stefanrattay1/COMSOL_Clippy"
 
 [project.optional-dependencies]
 # Lightweight dev deps for the pure-logic tests + linting. These intentionally do
@@ -37,7 +43,14 @@ packages = ["comsol_clippy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Deselect integration tests by default so the bare `pytest` that CI runs (with
+# only pytest+ruff installed) stays fast and heavy-dep-free. Run them explicitly
+# with `pytest -m integration` in an environment that has chromadb (and, for the
+# model-backed ones, torch + the embedding model) installed.
+addopts = "-q -m 'not integration'"
+markers = [
+    "integration: exercises the real heavy deps (chromadb / torch / the embedding model); opt-in",
+]
 
 [tool.ruff]
 # 110 clears the longest existing line (108) so the linter doesn't churn clean code.

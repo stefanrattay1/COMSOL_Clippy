@@ -31,15 +31,21 @@ def _spawn_daemon(cfg: Config) -> None:
     # Send the daemon's stderr to a log file so a failed startup (e.g. a bad bind
     # or a model-load error) is diagnosable instead of vanishing into DEVNULL.
     log = runtime_dir() / "daemon.log"
-    kwargs: dict = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": open(log, "ab", buffering=0),
-        "cwd": str(Path(__file__).resolve().parent.parent),
-    }
-    if os.name == "posix":
-        kwargs["start_new_session"] = True  # detach from our process group
-    subprocess.Popen(cmd, **kwargs)
+    # The child inherits this fd; close our copy after Popen so the shim doesn't
+    # leak it (the shim is short-lived, but keep it tidy).
+    logf = open(log, "ab", buffering=0)
+    try:
+        kwargs: dict = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": logf,
+            "cwd": str(Path(__file__).resolve().parent.parent),
+        }
+        if os.name == "posix":
+            kwargs["start_new_session"] = True  # detach from our process group
+        subprocess.Popen(cmd, **kwargs)
+    finally:
+        logf.close()
 
 
 def ensure_daemon(cfg: Config) -> None:

@@ -5,7 +5,7 @@ Merges into `mcpServers["comsol-clippy"]` without clobbering other entries
 (e.g. an existing `legalgpt`). Writes atomically and keeps a .bak.
 
 Usage:
-    register_mcp.py --command <cmd> --args <json-array> [--cwd <dir>] [--target <path> ...]
+    register_mcp.py --command <cmd> (--args <json-array> | --arg <value> --arg <value> ...) [--cwd <dir>] [--target <path> ...]
 
 If no --target is given, sensible defaults for the current OS are auto-detected.
 """
@@ -50,8 +50,10 @@ def _write_atomic(path: Path, data: dict) -> None:
 
 
 def merge_into(path: Path, entry: dict) -> str:
-    if not path.parent.exists():
-        return f"skip (parent dir missing): {path}"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return f"skip (could not create parent dir: {e}): {path}"
 
     data: dict = {}
     if path.exists():
@@ -92,10 +94,33 @@ def remove_from(path: Path) -> str:
     return f"removed from {path} (preserved: {others or 'none'})"
 
 
+def parse_server_args(args_json: str | None, repeated_args: list[str]) -> list[str]:
+    if repeated_args:
+        return repeated_args
+    if not args_json:
+        raise ValueError("missing server args")
+    try:
+        raw = json.loads(args_json)
+    except json.JSONDecodeError:
+        # PowerShell native command invocation can strip the inner quotes from a
+        # JSON array argument, turning ["main.py","serve"] into [main.py,serve].
+        # Accept that legacy form so old callers still register correctly.
+        text = args_json.strip()
+        if text.startswith("[") and text.endswith("]"):
+            parts = [part.strip().strip('"\'') for part in text[1:-1].split(",")]
+            raw = [part for part in parts if part]
+        else:
+            raise ValueError("--args must decode to a JSON array of strings") from None
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ValueError("--args must decode to a JSON array of strings")
+    return raw
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--command", help="server command (required unless --remove)")
     ap.add_argument("--args", help="JSON array of args (required unless --remove)")
+    ap.add_argument("--arg", action="append", default=[], help="one server arg; may be passed multiple times")
     ap.add_argument("--cwd", default=None)
     ap.add_argument("--target", action="append", default=[], help="config path(s)")
     ap.add_argument("--remove", action="store_true", help="unregister the server instead of adding it")
@@ -108,16 +133,27 @@ def main():
             print(f"[register] {remove_from(t)}")
         return
 
-    if not a.command or not a.args:
-        ap.error("--command and --args are required unless --remove is given")
+    if not a.command or (not a.args and not a.arg):
+        ap.error("--command and either --args or at least one --arg are required unless --remove is given")
 
-    entry: dict = {"command": a.command, "args": json.loads(a.args)}
+    try:
+        server_args = parse_server_args(a.args, a.arg)
+    except ValueError as e:
+        ap.error(str(e))
+
+    entry: dict = {"command": a.command, "args": server_args}
     if a.cwd:
         entry["cwd"] = a.cwd
 
     print(f"[register] entry: {json.dumps(entry)}", file=sys.stderr)
+    success = False
     for t in targets:
-        print(f"[register] {merge_into(t, entry)}")
+        msg = merge_into(t, entry)
+        print(f"[register] {msg}")
+        if msg.startswith("added") or msg.startswith("updated"):
+            success = True
+    if not success:
+        raise SystemExit("[register] ERROR: could not register in any Claude config target")
 
 
 if __name__ == "__main__":

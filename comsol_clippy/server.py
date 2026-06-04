@@ -13,6 +13,10 @@ from .embeddings import Embedder
 from .manifest import Manifest
 from .store import Store
 
+# Upper bound on how many passages a single search may request. ChromaDB would
+# otherwise be handed an unbounded (or negative) k and raise a raw library error.
+MAX_TOP_K = 50
+
 
 class Engine:
     """Lazily-initialized search engine shared by the MCP server and the CLI.
@@ -75,6 +79,26 @@ class Engine:
                 }
             )
         return out
+
+
+def _clamp_top_k(top_k: object) -> int:
+    """Coerce ``top_k`` to an int in ``1..MAX_TOP_K``. Never raises."""
+    try:
+        k = int(top_k)
+    except (TypeError, ValueError):
+        return 5
+    return max(1, min(MAX_TOP_K, k))
+
+
+def validate_search_args(query: str, top_k: object) -> tuple[str, int] | str:
+    """Return ``(clean_query, clamped_top_k)`` or a friendly error string.
+
+    Keeps bad input from reaching ChromaDB (which would raise a raw library error)
+    and gives the model a clear message it can act on instead.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return "Error: query cannot be empty."
+    return query.strip(), _clamp_top_k(top_k)
 
 
 def _citation(meta: dict) -> str:
@@ -156,6 +180,10 @@ def _register_daemon_tools(mcp, cfg: Config) -> None:
         Returns the most relevant passages, each prefixed with a citation of the
         source manual and page number, e.g. [HeatTransferModuleUsersGuide.pdf p.412].
         """
+        checked = validate_search_args(query, top_k)
+        if isinstance(checked, str):
+            return checked
+        query, top_k = checked
         try:
             hits = client.call(cfg, "search", {"query": query, "top_k": top_k})
         except client.DaemonError as e:
@@ -192,6 +220,10 @@ def _register_inprocess_tools(mcp, cfg: Config) -> None:
         Returns the most relevant passages, each prefixed with a citation of the
         source manual and page number, e.g. [HeatTransferModuleUsersGuide.pdf p.412].
         """
+        checked = validate_search_args(query, top_k)
+        if isinstance(checked, str):
+            return checked
+        query, top_k = checked
         return format_hits(engine.search(query, top_k=top_k))
 
     @mcp.tool()

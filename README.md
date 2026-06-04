@@ -127,8 +127,12 @@ Claude.
   check, open this folder in a terminal and run:
   `.venv/bin/python main.py status` (Windows: `.venv-win\Scripts\python main.py status`).
   It should end with **“all checks passed.”**
+- **“Backend unavailable” or you want to see what the helper is doing.** The background
+  helper logs to `daemon.log` inside its runtime folder (`$XDG_RUNTIME_DIR/comsol-clippy-*/`
+  on Linux/WSL). To watch it live, run `python main.py stop-daemon` then
+  `python main.py daemon` in a terminal. See **[docs/TECHNICAL.md → Debugging the daemon](docs/TECHNICAL.md)**.
 - Still stuck? See the technical notes in **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.
 
 ---
 
-*Curious how it works under the hood? See **[docs/TECHNICAL.md](docs/TECHNICAL.md)**.*
+License: MIT (see [LICENSE](LICENSE))

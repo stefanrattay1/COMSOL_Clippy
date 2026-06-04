@@ -33,10 +33,15 @@ Both setup scripts run the full pipeline and are idempotent.
 
 ### Adaptive runtime
 `setup.ps1` prefers running the server inside **WSL2** (for the GPU): it detects the
-default WSL distro, checks it has Python, and hands off to `setup/setup.sh`. If WSL is
-unavailable, it falls back to **native Windows Python** (CPU). The MCP entry is
+default WSL distro first, then any other listed distro that can actually launch `bash`,
+converts the project path inside WSL with `wslpath`, and hands off to `setup/setup.sh`.
+If WSL is unavailable, it falls back to **native Windows Python** (CPU). The MCP entry is
 registered to match whichever runtime was chosen. WSL builds the venv at `.venv`;
 native Windows uses `.venv-win` (the two are never mixed).
+
+After dependency installation, both setup scripts print the **actual torch runtime
+device** (`cuda` or `cpu`) from the environment they just built, and if an existing
+venv looks broken they rebuild it once before continuing.
 
 **Windows with no Python:** the native fallback auto-installs it. `Find-Python` first
 checks whether a real `python` runs (ignoring the Microsoft Store stub), then probes
@@ -153,6 +158,14 @@ A `.bak` is written before each edit; existing servers (e.g. `legalgpt`) are pre
 - **`status` says collection MISSING/empty:** run `main.py ingest`.
 - **CUDA OOM:** lower `[embedding].batch_size` in `config.toml`.
 - **Re-embed everything:** `main.py ingest --rebuild`.
+- **`hf_xet.download_files() is deprecated` on model download:** harmless. The
+  embedding model's `trust_remote_code` reads `config.rope_theta` (removed in
+  transformers 5.x), so `transformers` is pinned `<4.46`, which transitively caps
+  `huggingface_hub <1.0` — and that old hub still calls the deprecated Xet API.
+  We set `HF_HUB_DISABLE_XET=1` (in `comsol_clippy/__init__.py` and the setup
+  scripts) to route around it via plain HTTPS, so you shouldn't see it. Upgrading
+  the stack to silence it at the source isn't possible without swapping the model
+  (hub ≥1.0 requires transformers ≥5, which the model doesn't support).
 - **High RAM with several Claude windows:** check `main.py status` shows the daemon
   `running` (one model copy shared). `main.py stop-daemon` frees it immediately; it
   also self-exits after 30 min idle. If a query says "backend unavailable", see
@@ -160,3 +173,22 @@ A `.bak` is written before each edit; existing servers (e.g. `legalgpt`) are pre
 - **`Errno 95 Operation not supported` in daemon.log:** the socket landed on a Windows
   drive (DrvFs). It should live under `$XDG_RUNTIME_DIR`/`/tmp`; ensure that env var
   points at a native-Linux tmpfs.
+
+### Debugging the daemon
+
+The daemon normally runs detached (auto-spawned by the first shim) and logs its
+stderr to `$XDG_RUNTIME_DIR/comsol-clippy-<hash>/daemon.log` (falls back to
+`$TMPDIR`; the `<hash>` is a short digest of the project root so two checkouts
+don't collide). To watch it live instead, stop any running copy and run it in the
+foreground:
+
+```bash
+python main.py stop-daemon    # free the existing copy first
+python main.py daemon         # runs in the foreground; Ctrl-C to stop
+```
+
+You'll see `[daemon] listening on …`, the pre-warm line once the model loads, and
+any per-request errors as they happen. A clean `[daemon] could not bind …` line
+means another daemon already owns the socket (or the path isn't bindable — see the
+DrvFs note above). `python main.py status` reports whether the daemon is
+`running`/`stopped` and ends with a smoke query that exercises the full path.

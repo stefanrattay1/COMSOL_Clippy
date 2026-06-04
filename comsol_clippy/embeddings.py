@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import sys
+import threading
+from collections import OrderedDict
 
 from .config import EmbeddingConfig
 
@@ -37,6 +39,13 @@ class Embedder:
         )
         self.model.max_seq_length = min(cfg.max_seq_tokens, self.model.max_seq_length or cfg.max_seq_tokens)
         self.tokenizer = self.model.tokenizer
+
+        # Bounded LRU of raw-query-text -> embedding vector. The instruction wrapper is
+        # built from frozen per-process cfg, so the raw query determines the embedding
+        # uniquely; the daemon respawns on config change, so the cache can't go stale.
+        self._qcache: OrderedDict[str, list[float]] = OrderedDict()
+        self._qcache_lock = threading.Lock()
+        self._qcache_max = cfg.cache_size
 
     # --- tokenizer helpers used by the chunker ---
     def encode_tokens(self, text: str) -> list[int]:
@@ -84,7 +93,7 @@ class Embedder:
             )
         return vecs
 
-    def embed_query(self, query: str) -> list[float]:
+    def _embed_query_uncached(self, query: str) -> list[float]:
         # The "Instruct: <task>\nQuery: " wrapper is specific to instruction-tuned
         # models like gte-Qwen2. For other models it would be embedded literally and
         # hurt retrieval, so only apply it when instruction_format == "qwen-instruct".
@@ -93,5 +102,27 @@ class Embedder:
             text = f"Instruct: {self.cfg.query_instruction}\nQuery: {query}"
         else:
             text = query
-        vecs = self._encode([text], prompt_name=None)
-        return vecs[0]
+        return self._encode([text], prompt_name=None)[0]
+
+    def embed_query(self, query: str) -> list[float]:
+        if self._qcache_max <= 0:
+            return self._embed_query_uncached(query)
+
+        # Hit: refresh recency and hand back a copy so callers can't mutate the cache.
+        with self._qcache_lock:
+            cached = self._qcache.get(query)
+            if cached is not None:
+                self._qcache.move_to_end(query)
+                return list(cached)
+
+        # Miss: compute outside the lock so concurrent queries don't serialize behind
+        # one inference. A rare duplicate concurrent miss just recomputes once; the
+        # second insert overwrites harmlessly. An OOM that raises never reaches the
+        # insert below, so failed embeddings never poison the cache.
+        vec = self._embed_query_uncached(query)
+        with self._qcache_lock:
+            self._qcache[query] = vec
+            self._qcache.move_to_end(query)
+            while len(self._qcache) > self._qcache_max:
+                self._qcache.popitem(last=False)
+        return list(vec)

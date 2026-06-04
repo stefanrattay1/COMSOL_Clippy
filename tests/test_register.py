@@ -38,6 +38,26 @@ def test_merge_is_idempotent_overwrite(tmp_path):
     assert data["mcpServers"]["comsol-clippy"]["command"] == "b"
 
 
+def test_merge_creates_missing_parent_dirs(tmp_path):
+    cfg = tmp_path / "nested" / "claude" / "claude_desktop_config.json"
+    msg = register_mcp.merge_into(cfg, {"command": "py", "args": ["main.py", "serve"]})
+    data = json.loads(cfg.read_text())
+    assert "added" in msg
+    assert data["mcpServers"]["comsol-clippy"]["command"] == "py"
+
+
+def test_parse_server_args_accepts_repeated_args():
+    assert register_mcp.parse_server_args(None, ["main.py", "serve"]) == ["main.py", "serve"]
+
+
+def test_parse_server_args_accepts_json_array():
+    assert register_mcp.parse_server_args('["main.py", "serve"]', []) == ["main.py", "serve"]
+
+
+def test_parse_server_args_accepts_legacy_bracket_list():
+    assert register_mcp.parse_server_args("[main.py,serve]", []) == ["main.py", "serve"]
+
+
 def test_remove_deletes_only_our_key(tmp_path):
     cfg = tmp_path / "cfg.json"
     _write(

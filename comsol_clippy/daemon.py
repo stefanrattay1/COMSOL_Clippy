@@ -35,10 +35,15 @@ from pathlib import Path
 
 from .config import PROJECT_ROOT, Config, load_config
 from .protocol import recv_json, send_json
-from .server import Engine
+from .server import Engine, _clamp_top_k
 
 # Default: reclaim RAM after 30 min of no MCP windows talking to us.
 DEFAULT_IDLE_TIMEOUT = 30 * 60
+
+# Bound how long a single connection may stall mid-request. Generous enough for a
+# cold-model first query (the daemon side itself never blocks the handshake on the
+# load) yet finite, so a peer that sends a partial line can't park a thread forever.
+HANDLER_TIMEOUT = 120.0
 
 
 def runtime_dir() -> Path:
@@ -127,7 +132,9 @@ class _Daemon:
                 return {"ok": True, "result": "pong"}
             if method == "search":
                 query = params["query"]
-                top_k = int(params.get("top_k", 5))
+                # Clamp here too: the in-process shim already validates, but a
+                # direct socket client must not be able to hand Chroma a bad k.
+                top_k = _clamp_top_k(params.get("top_k", 5))
                 return {"ok": True, "result": self.engine.search(query, top_k=top_k)}
             if method == "list_sources":
                 return {"ok": True, "result": self.engine.list_sources()}
@@ -177,11 +184,19 @@ class _Daemon:
 
         class Handler(socketserver.StreamRequestHandler):
             def handle(self) -> None:
+                # Don't let a peer that sends a partial line park this thread forever.
+                self.connection.settimeout(HANDLER_TIMEOUT)
                 daemon_self._enter()
                 try:
                     while True:
                         try:
                             req = recv_json(self.connection)
+                        except socket.timeout:
+                            try:
+                                send_json(self.connection, {"ok": False, "error": "request timed out"})
+                            except OSError:
+                                pass
+                            return
                         except ValueError as e:
                             send_json(self.connection, {"ok": False, "error": str(e)})
                             return
@@ -200,7 +215,13 @@ class _Daemon:
             daemon_threads = True
             allow_reuse_address = True
 
-        self._server = Server(str(sock_path), Handler)
+        try:
+            self._server = Server(str(sock_path), Handler)
+        except OSError as e:
+            # A live daemon already on this socket, or a non-bindable path (e.g.
+            # AF_UNIX on /mnt DrvFs under WSL). Make it diagnosable in daemon.log.
+            print(f"[daemon] could not bind {sock_path}: {e}", file=sys.stderr)
+            raise
         # Lock the socket down to the current user.
         try:
             os.chmod(sock_path, 0o600)
@@ -227,7 +248,13 @@ class _Daemon:
         try:
             signal.signal(signal.SIGTERM, _on_term)
         except ValueError:
-            pass  # not on the main thread (e.g. under tests) — skip
+            # Not on the main thread (e.g. under tests). stop-daemon falls back to
+            # a pid-based kill, but won't get a clean socket/pid cleanup — say so.
+            print(
+                "[daemon] WARNING: no SIGTERM handler (not main thread); "
+                "stop-daemon will pid-kill without clean socket/pid cleanup.",
+                file=sys.stderr,
+            )
 
         print(f"[daemon] listening on {sock_path}", file=sys.stderr)
         try:
