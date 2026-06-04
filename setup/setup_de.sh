@@ -163,8 +163,25 @@ else
   echo "[setup] installiere CPU-torch."
 fi
 
+# uvs Cache liegt auf dem Linux-Dateisystem, das venv jedoch auf /mnt (DrvFs); Hardlinks
+# ueber beide hinweg schlagen fehl, daher warnt uv und kopiert vollstaendig. Hier vorab
+# auf Kopieren stellen.
+export UV_LINK_MODE=copy
+
 pip_install() {
   if [ "$HAVE_UV" = "1" ]; then uv pip install --python "$PY" "$@"; else "$PY" -m pip install "$@"; fi
+}
+
+# Wahr, wenn torch (in der gewuenschten CUDA/CPU-Variante) vorhanden ist UND das Projekt
+# samt Abhaengigkeiten bereits installiert ist. Trifft das zu, hat ein erneuter Lauf nichts
+# zu installieren, also ueberspringen wir die gesamte pip-Phase. Die Abhaengigkeitspruefung
+# liest installierte Paket-Metadaten statt die Bibliotheken zu importieren — ein Import von
+# sentence-transformers/torch kostet ~35s, der Metadaten-Lookup ~0.1s.
+runtime_stack_satisfied() {
+  "$PY" -c "$TORCH_CHECK" >/dev/null 2>&1 \
+    && "$PY" -c 'import importlib.metadata as m
+for p in ("comsol-clippy","sentence-transformers","transformers","chromadb","pymupdf","mcp","typer"):
+    m.version(p)' >/dev/null 2>&1
 }
 
 install_runtime_stack() {
@@ -178,7 +195,14 @@ install_runtime_stack() {
   pip_install -e .
 }
 
-install_runtime_stack
+if [ "$REBUILD" = "1" ]; then
+  # --rebuild erzwingt einen sauberen Neuinstallationslauf, auch wenn alles bereits importiert.
+  install_runtime_stack
+elif runtime_stack_satisfied; then
+  echo "[setup] Laufzeit-Stack bereits in .venv installiert — Neuinstallation wird uebersprungen."
+else
+  install_runtime_stack
+fi
 
 if RUNTIME_DEVICE="$(probe_runtime_device 2>/dev/null)"; then
   echo "[setup] fuer torch verfuegbares Laufzeitgeraet: $RUNTIME_DEVICE"

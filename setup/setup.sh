@@ -160,8 +160,23 @@ else
   echo "[setup] installing CPU torch."
 fi
 
+# uv's cache lives on the Linux fs while the venv is on /mnt (DrvFs); hardlinks across
+# the two fail, so uv warns and falls back to a full copy. Tell it to copy up front.
+export UV_LINK_MODE=copy
+
 pip_install() {
   if [ "$HAVE_UV" = "1" ]; then uv pip install --python "$PY" "$@"; else "$PY" -m pip install "$@"; fi
+}
+
+# True when torch (with the wanted CUDA/CPU flavour) is present AND the project + its deps
+# are already installed. When this holds, a re-run has nothing to install, so we skip the
+# whole pip stage. The dep check reads installed-package metadata rather than importing the
+# libraries — importing sentence-transformers/torch costs ~35s, the metadata lookup ~0.1s.
+runtime_stack_satisfied() {
+  "$PY" -c "$TORCH_CHECK" >/dev/null 2>&1 \
+    && "$PY" -c 'import importlib.metadata as m
+for p in ("comsol-clippy","sentence-transformers","transformers","chromadb","pymupdf","mcp","typer"):
+    m.version(p)' >/dev/null 2>&1
 }
 
 install_runtime_stack() {
@@ -175,7 +190,14 @@ install_runtime_stack() {
   pip_install -e .
 }
 
-install_runtime_stack
+if [ "$REBUILD" = "1" ]; then
+  # --rebuild forces a clean reinstall pass even if everything already imports.
+  install_runtime_stack
+elif runtime_stack_satisfied; then
+  echo "[setup] runtime stack already installed in .venv — skipping reinstall."
+else
+  install_runtime_stack
+fi
 
 if RUNTIME_DEVICE="$(probe_runtime_device 2>/dev/null)"; then
   echo "[setup] runtime device available to torch: $RUNTIME_DEVICE"
