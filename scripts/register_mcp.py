@@ -42,6 +42,13 @@ def default_targets() -> list[Path]:
     return targets
 
 
+def _write_atomic(path: Path, data: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
 def merge_into(path: Path, entry: dict) -> str:
     if not path.parent.exists():
         return f"skip (parent dir missing): {path}"
@@ -59,28 +66,55 @@ def merge_into(path: Path, entry: dict) -> str:
     existing = servers.get(SERVER_KEY)
     servers[SERVER_KEY] = entry
 
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    _write_atomic(path, data)
     verb = "updated" if existing else "added"
     others = [k for k in servers if k != SERVER_KEY]
     return f"{verb} in {path} (preserved: {others or 'none'})"
 
 
+def remove_from(path: Path) -> str:
+    """Remove our SERVER_KEY entry, preserving every other server. Idempotent."""
+    if not path.exists():
+        return f"skip (not present): {path}"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        return f"skip (unreadable: {e}): {path}"
+
+    servers = data.get("mcpServers", {})
+    if SERVER_KEY not in servers:
+        return f"already absent in {path}"
+    shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
+    del servers[SERVER_KEY]
+    _write_atomic(path, data)
+    others = list(servers)
+    return f"removed from {path} (preserved: {others or 'none'})"
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--command", required=True)
-    ap.add_argument("--args", required=True, help="JSON array of args")
+    ap.add_argument("--command", help="server command (required unless --remove)")
+    ap.add_argument("--args", help="JSON array of args (required unless --remove)")
     ap.add_argument("--cwd", default=None)
     ap.add_argument("--target", action="append", default=[], help="config path(s)")
+    ap.add_argument("--remove", action="store_true", help="unregister the server instead of adding it")
     a = ap.parse_args()
+
+    targets = [Path(t) for t in a.target] or default_targets()
+
+    if a.remove:
+        for t in targets:
+            print(f"[register] {remove_from(t)}")
+        return
+
+    if not a.command or not a.args:
+        ap.error("--command and --args are required unless --remove is given")
 
     entry: dict = {"command": a.command, "args": json.loads(a.args)}
     if a.cwd:
         entry["cwd"] = a.cwd
 
-    targets = [Path(t) for t in a.target] or default_targets()
     print(f"[register] entry: {json.dumps(entry)}", file=sys.stderr)
     for t in targets:
         print(f"[register] {merge_into(t, entry)}")

@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import chromadb
-
 
 class Store:
     def __init__(self, chroma_dir: Path, collection: str):
+        import chromadb  # lazy: keeps pure-logic imports (and CI) free of chromadb
+
         chroma_dir.mkdir(parents=True, exist_ok=True)
         self.client = chromadb.PersistentClient(path=str(chroma_dir))
         self.collection_name = collection
@@ -69,7 +69,9 @@ class Store:
                     "text": docs[i],
                     "metadata": metas[i],
                     "distance": dists[i],
-                    "relevance": 1.0 - dists[i],  # cosine distance -> similarity
+                    # cosine distance -> similarity, clamped: cosine distance can exceed
+                    # 1.0 for opposed vectors, which would otherwise yield a negative score.
+                    "relevance": max(0.0, min(1.0, 1.0 - dists[i])),
                 }
             )
         return hits

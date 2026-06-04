@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-import fitz  # PyMuPDF
+# PyMuPDF (fitz) is imported lazily inside the functions that touch PDFs so that
+# the pure-logic helpers (chunking, citations) — and CI — don't need it installed.
 
 
 @dataclass
@@ -79,6 +80,8 @@ def is_pdf(filename: str) -> bool:
 
 def extract_pages(pdf_path: Path) -> list[str]:
     """Return normalized text for each page (index 0 == page 1)."""
+    import fitz  # PyMuPDF
+
     pages: list[str] = []
     with fitz.open(pdf_path) as doc:
         for page in doc:
@@ -90,6 +93,8 @@ def page_count(path: Path) -> int:
     """Page count for PDFs; 0 for text files (which have no pages)."""
     if not is_pdf(path.name):
         return 0
+    import fitz  # PyMuPDF
+
     with fitz.open(path) as doc:
         return doc.page_count
 

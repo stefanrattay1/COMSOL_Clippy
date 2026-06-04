@@ -5,8 +5,13 @@
 model = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
 dim = 1536
 max_seq_tokens = 8192          # model supports 32k; capped for memory/speed
-batch_size = 8                 # auto-halves on CUDA OOM down to 1
+batch_size = 8                 # auto-halves on OOM (CUDA or CPU) down to 1
+# How queries are formatted before embedding:
+#   "qwen-instruct" -> wrap as "Instruct: <task>\nQuery: <q>" (for gte-Qwen2 instruct models)
+#   "none"          -> embed the raw query (for non-instruct models)
+instruction_format = "qwen-instruct"
 # Task description used for the query instruction prefix (documents get none).
+# Only used when instruction_format = "qwen-instruct".
 query_instruction = "Given a question about COMSOL Multiphysics, retrieve relevant passages from the user manuals that answer it"
 
 [chunking]
@@ -22,3 +27,9 @@ manifest_name = "manifest.json"
 
 [store]
 collection = "comsol_docs"
+
+[search]
+# Drop hits whose relevance (1 - cosine distance, clamped to [0,1]) is below this
+# floor. 0.0 keeps current behaviour (always return top_k); raise it so off-topic
+# questions get an honest "no relevant passages" instead of weak matches.
+min_relevance = 0.0

@@ -9,6 +9,22 @@ cd "$PROJECT_DIR"
 VENV="$PROJECT_DIR/.venv"
 PY="$VENV/bin/python"
 
+# --- Concurrency guard: don't let two setup runs race on the venv/pip/ingest. ---
+# flock holds an exclusive lock for the life of this script; a second run exits early
+# with a clear message instead of corrupting a half-built venv.
+LOCK="$PROJECT_DIR/.setup.lock"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$LOCK"
+  if ! flock -n 9; then
+    echo "[setup] Another setup is already running in this folder. Wait for it to finish, then re-run." >&2
+    exit 1
+  fi
+fi
+
+# --- Friendly failure: turn the next 'set -e' abort into plain language. ---
+fail() { echo ""; echo "[setup] PROBLEM: $1" >&2; echo "[setup] $2" >&2; exit 1; }
+trap 'fail "setup stopped on an unexpected error (line $LINENO)." "Scroll up for the last command'\''s output; fix that and re-run start.cmd."' ERR
+
 # Keep the setup window readable: a per-chunk download timeout (so a stalled model
 # download errors and retries instead of hanging), and no tqdm progress-bar spam.
 export HF_HUB_DOWNLOAD_TIMEOUT=30
@@ -58,6 +74,13 @@ echo "[setup] installing project dependencies ..."
 pip_install -e .
 
 # --- Stage 3: ingest (incremental) ---
+if [ ! -d "$PROJECT_DIR/source" ] || [ -z "$(ls -A "$PROJECT_DIR/source" 2>/dev/null)" ]; then
+  echo ""
+  echo "[setup] NOTE: the 'source/' folder is empty."
+  echo "[setup] Add your COMSOL manuals (PDF) or notes (.txt/.md) to:"
+  echo "[setup]   $PROJECT_DIR/source"
+  echo "[setup] then re-run start.cmd. Continuing setup so the server still registers."
+fi
 echo "[setup] building/repairing vectorstore ..."
 "$PY" main.py ingest
 
@@ -79,11 +102,15 @@ if grep -qi microsoft /proc/version 2>/dev/null && command -v wslpath >/dev/null
   fi
 fi
 
-# --- Stage 5: verify ---
+# --- Stage 5: restart any running daemon so this run's code/store takes effect ---
+echo "[setup] restarting search daemon (if running) ..."
+"$PY" main.py restart-daemon || true
+
+# --- Stage 6: verify ---
 echo "[setup] verifying ..."
 "$PY" main.py status
 
-# --- Stage 6: test query + optional live MCP test ---
+# --- Stage 7: test query + optional live MCP test ---
 echo ""
 echo "=============================================="
 echo " Test query"

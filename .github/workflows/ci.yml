@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 exercises the `tomli` fallback path; 3.12 uses stdlib tomllib.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dev tooling (no heavy ML deps)
+        # The pure-logic tests import only stdlib-backed modules (torch / chromadb /
+        # pymupdf imports are all lazy), so we deliberately install just pytest + ruff.
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest ruff "tomli; python_version < '3.11'"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest

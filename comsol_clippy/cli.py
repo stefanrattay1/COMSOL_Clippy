@@ -1,8 +1,6 @@
 """CLI surface: serve | ingest | query | status."""
 from __future__ import annotations
 
-import sys
-
 import typer
 
 from .config import load_config
@@ -12,10 +10,122 @@ app = typer.Typer(add_completion=False, help="COMSOL Clippy — RAG over COMSOL 
 
 @app.command()
 def serve():
-    """Start the MCP server over stdio (launched by the MCP client)."""
+    """Start the MCP server over stdio (launched by the MCP client).
+
+    This is a thin shim: it forwards search/list calls to a shared, long-lived
+    daemon (auto-spawned) that holds the single model copy, so opening N Claude
+    windows no longer means N model copies in RAM.
+    """
     from .server import serve as _serve
 
     _serve()
+
+
+@app.command()
+def daemon(
+    idle_timeout: int = typer.Option(
+        1800,
+        "--idle-timeout",
+        help="Seconds of inactivity before the daemon exits to free RAM (0 = never).",
+    ),
+):
+    """Run the shared search daemon (one model copy for all MCP windows).
+
+    Normally auto-spawned by `serve`; run it manually to keep it warm or to debug.
+    """
+    from .daemon import run_daemon
+
+    run_daemon(load_config(), idle_timeout=idle_timeout)
+
+
+@app.command(name="stop-daemon")
+def stop_daemon():
+    """Stop the shared daemon (frees the model's RAM immediately)."""
+    cfg = load_config()
+    msg = _stop_daemon(cfg)
+    typer.echo(msg)
+
+
+@app.command(name="restart-daemon")
+def restart_daemon():
+    """Stop the daemon if running; the next query respawns it with current code/config."""
+    cfg = load_config()
+    typer.echo(_stop_daemon(cfg))
+    # Wait for it to actually go away so a stale socket doesn't confuse the respawn.
+    _wait_stopped(cfg)
+    typer.echo("[restart-daemon] stopped; it will respawn on the next query.")
+
+
+@app.command()
+def uninstall(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+):
+    """Unregister the MCP server from Claude config(s) and stop the daemon.
+
+    Leaves your indexed data (data/) and venv in place — delete those manually if
+    you also want to remove the vectorstore.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    cfg = load_config()
+    if not yes:
+        typer.confirm(
+            "Remove the 'comsol-clippy' entry from your Claude config(s) and stop the daemon?",
+            abort=True,
+        )
+
+    typer.echo(_stop_daemon(cfg))
+    _wait_stopped(cfg)
+
+    project_root = Path(__file__).resolve().parent.parent
+    script = project_root / "scripts" / "register_mcp.py"
+    try:
+        subprocess.run([sys.executable, str(script), "--remove"], check=True)
+    except subprocess.CalledProcessError as e:
+        typer.echo(f"[uninstall] WARNING: unregister step failed ({e}).")
+    typer.echo("[uninstall] done. Restart Claude Desktop for the change to take effect.")
+
+
+def _stop_daemon(cfg) -> str:
+    """Stop a running daemon. Returns a human-readable status line."""
+    import os
+    import signal
+
+    from .daemon import is_running, socket_path
+
+    if not is_running(cfg):
+        return "[daemon] not running."
+    pid = _read_daemon_pid(cfg)
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            return f"[daemon] sent SIGTERM to pid {pid}."
+        except ProcessLookupError:
+            pass
+    return f"[daemon] could not locate pid; remove {socket_path(cfg)} manually if stale."
+
+
+def _wait_stopped(cfg, timeout: float = 10.0) -> None:
+    import time
+
+    from .daemon import is_running
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not is_running(cfg):
+            return
+        time.sleep(0.25)
+
+
+def _read_daemon_pid(cfg) -> int | None:
+    from .daemon import pid_path
+
+    try:
+        return int(pid_path(cfg).read_text().strip())
+    except (OSError, ValueError):
+        return None
 
 
 @app.command()
@@ -74,12 +184,15 @@ def query(
 @app.command()
 def status():
     """Environment + vectorstore health check, with a smoke query."""
+    from .daemon import is_running
     from .embeddings import detect_device
     from .manifest import Manifest
     from .store import Store
 
     cfg = load_config()
     ok = True
+
+    typer.echo(f"[status] daemon:           {'running' if is_running(cfg) else 'stopped'}")
 
     device = detect_device()
     typer.echo(f"[status] embedding device: {device}")
@@ -107,7 +220,7 @@ def status():
         ok = False
 
     if ok:
-        from .server import Engine, format_hits
+        from .server import Engine
 
         typer.echo("[status] smoke query: 'conjugate heat transfer'")
         engine = Engine(cfg)

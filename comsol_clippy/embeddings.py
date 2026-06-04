@@ -61,12 +61,17 @@ class Embedder:
                     show_progress_bar=len(texts) > 32,
                 )
                 return [v.tolist() for v in vecs]
-            except torch.cuda.OutOfMemoryError:
-                torch.cuda.empty_cache()
+            except (torch.cuda.OutOfMemoryError, MemoryError, RuntimeError) as e:
+                # Catch CUDA OOM, host MemoryError, and the CPU path's
+                # RuntimeError("[...] out of memory"). Anything else re-raises.
+                if isinstance(e, RuntimeError) and "out of memory" not in str(e).lower():
+                    raise
+                if self.device == "cuda":
+                    torch.cuda.empty_cache()
                 if batch <= 1:
                     raise
                 batch = max(1, batch // 2)
-                print(f"[embeddings] CUDA OOM, retrying with batch_size={batch}", file=sys.stderr)
+                print(f"[embeddings] OOM, retrying with batch_size={batch}", file=sys.stderr)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -80,8 +85,13 @@ class Embedder:
         return vecs
 
     def embed_query(self, query: str) -> list[float]:
-        # gte-Qwen2 ships a "query" prompt = "Instruct: <task>\nQuery: ".
+        # The "Instruct: <task>\nQuery: " wrapper is specific to instruction-tuned
+        # models like gte-Qwen2. For other models it would be embedded literally and
+        # hurt retrieval, so only apply it when instruction_format == "qwen-instruct".
         # We pass our own instruction explicitly to control the task description.
-        prompted = f"Instruct: {self.cfg.query_instruction}\nQuery: {query}"
-        vecs = self._encode([prompted], prompt_name=None)
+        if self.cfg.instruction_format == "qwen-instruct":
+            text = f"Instruct: {self.cfg.query_instruction}\nQuery: {query}"
+        else:
+            text = query
+        vecs = self._encode([text], prompt_name=None)
         return vecs[0]

@@ -1,9 +1,13 @@
 .venv/
 .venv-win/
 .claude/
+claude*
 data/
 __pycache__/
 *.egg-info/
 *.pyc
 .DS_Store
 source/
+.setup.lock
+.pytest_cache/
+.ruff_cache/

@@ -57,7 +57,11 @@ class Engine:
 
     def search(self, query: str, top_k: int = 5) -> list[dict]:
         vec = self.embedder.embed_query(query)
-        return self.store.query(vec, top_k)
+        hits = self.store.query(vec, top_k)
+        floor = self.cfg.min_relevance
+        if floor > 0.0:
+            hits = [h for h in hits if h.get("relevance", 0.0) >= floor]
+        return hits
 
     def list_sources(self) -> list[dict]:
         manifest = Manifest.load(self.cfg.manifest_path)
@@ -97,11 +101,53 @@ def format_hits(hits: list[dict]) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
+def _format_sources(rows: list[dict]) -> str:
+    if not rows:
+        return "No sources indexed yet. Run `python main.py ingest`."
+    lines = []
+    for r in rows:
+        extent = f"{r['pages']} pages" if r["pages"] else "text"
+        lines.append(f"- {r['source']}: {extent}, {r['chunks']} chunks")
+    return "Indexed COMSOL documents:\n" + "\n".join(lines)
+
+
+def _daemon_supported() -> bool:
+    """The daemon needs AF_UNIX sockets + POSIX file locking (fcntl).
+
+    Both are POSIX-only; on native Windows we fall back to an in-process Engine.
+    (Under WSL — the GPU path where shared-RAM matters most — both are present.)
+    """
+    import os
+    import socket
+
+    if os.name != "posix":
+        return False
+    return hasattr(socket, "AF_UNIX")
+
+
 def build_server(cfg: Config | None = None):
+    """Build the FastMCP stdio server.
+
+    On POSIX it is a thin shim over a shared daemon: the model + store live in one
+    long-lived daemon (see daemon.py), so N Claude windows share a single ~700 MB
+    model instead of loading it N times. On native Windows (no AF_UNIX/fcntl) it
+    falls back to loading the model in-process, which is the original behaviour.
+    """
     from mcp.server.fastmcp import FastMCP
 
-    engine = Engine(cfg)
+    cfg = cfg or load_config()
     mcp = FastMCP("comsol-clippy")
+
+    if _daemon_supported():
+        _register_daemon_tools(mcp, cfg)
+    else:
+        print("[server] daemon unsupported on this platform; using in-process model.", file=sys.stderr)
+        _register_inprocess_tools(mcp, cfg)
+    return mcp
+
+
+def _register_daemon_tools(mcp, cfg: Config) -> None:
+    from . import client
 
     @mcp.tool()
     def search_comsol_docs(query: str, top_k: int = 5) -> str:
@@ -110,8 +156,11 @@ def build_server(cfg: Config | None = None):
         Returns the most relevant passages, each prefixed with a citation of the
         source manual and page number, e.g. [HeatTransferModuleUsersGuide.pdf p.412].
         """
-        hits = engine.search(query, top_k=top_k)
-        return format_hits(hits)
+        try:
+            hits = client.call(cfg, "search", {"query": query, "top_k": top_k})
+        except client.DaemonError as e:
+            return f"COMSOL Clippy backend unavailable: {e}"
+        return format_hits(hits or [])
 
     @mcp.tool()
     def list_sources() -> str:
@@ -119,18 +168,41 @@ def build_server(cfg: Config | None = None):
 
         Useful as a first call so you know what material is available to search.
         """
-        rows = engine.list_sources()
-        if not rows:
-            return "No sources indexed yet. Run `python main.py ingest`."
-        lines = []
-        for r in rows:
-            extent = f"{r['pages']} pages" if r["pages"] else "text"
-            lines.append(f"- {r['source']}: {extent}, {r['chunks']} chunks")
-        return "Indexed COMSOL documents:\n" + "\n".join(lines)
+        try:
+            rows = client.call(cfg, "list_sources")
+        except client.DaemonError as e:
+            return f"COMSOL Clippy backend unavailable: {e}"
+        return _format_sources(rows or [])
 
-    # Start loading the model in the background so the first user query is fast.
+    # Spawn/warm the shared daemon now so the first user query is fast, but never
+    # let a backend hiccup block the stdio handshake.
+    try:
+        client.ensure_daemon(cfg)
+    except client.DaemonError as e:
+        print(f"[server] daemon not ready yet ({e}); will retry on first query.", file=sys.stderr)
+
+
+def _register_inprocess_tools(mcp, cfg: Config) -> None:
+    engine = Engine(cfg)
+
+    @mcp.tool()
+    def search_comsol_docs(query: str, top_k: int = 5) -> str:
+        """Search the COMSOL Multiphysics manuals for passages relevant to a question.
+
+        Returns the most relevant passages, each prefixed with a citation of the
+        source manual and page number, e.g. [HeatTransferModuleUsersGuide.pdf p.412].
+        """
+        return format_hits(engine.search(query, top_k=top_k))
+
+    @mcp.tool()
+    def list_sources() -> str:
+        """List the indexed COMSOL documents with their page and chunk counts.
+
+        Useful as a first call so you know what material is available to search.
+        """
+        return _format_sources(engine.list_sources())
+
     engine.prewarm_async()
-    return mcp
 
 
 def serve(cfg: Config | None = None) -> None:

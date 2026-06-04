@@ -148,12 +148,23 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[setup] installing project dependencies ..."
 Pip-Install -e .
 
+$SourceDir = Join-Path $ProjectDir "source"
+if (-not (Test-Path $SourceDir) -or -not (Get-ChildItem -Path $SourceDir -ErrorAction SilentlyContinue)) {
+  Write-Host ""
+  Write-Host "[setup] NOTE: the 'source/' folder is empty."
+  Write-Host "[setup] Add your COMSOL manuals (PDF) or notes (.txt/.md) to:"
+  Write-Host "[setup]   $SourceDir"
+  Write-Host "[setup] then re-run start.cmd. Continuing so the server still registers."
+}
 Write-Host "[setup] building/repairing vectorstore ..."
 & $Py main.py ingest
 
 Write-Host "[setup] registering MCP server ..."
 $argsJson = '["main.py","serve"]'
 & $Py scripts\register_mcp.py --command $Py --args $argsJson --cwd $ProjectDir
+
+Write-Host "[setup] restarting search daemon (if running) ..."
+& $Py main.py restart-daemon
 
 Write-Host "[setup] verifying ..."
 & $Py main.py status

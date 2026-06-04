@@ -1,9 +1,0 @@
-# Fallback dependency list (used by the Windows-native setup path).
-# torch is installed separately by the setup scripts (CUDA wheel in WSL, CPU wheel on Windows).
-sentence-transformers>=3.0,<3.4
-transformers>=4.44,<4.46
-chromadb>=0.5
-pymupdf>=1.24
-mcp>=1.2
-typer>=0.12
-tomli>=2.0 ; python_version < "3.11"

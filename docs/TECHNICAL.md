@@ -5,7 +5,7 @@ server** so Claude (Desktop or Code) can answer COMSOL questions with cited pass
 
 - **Embeddings:** [`Alibaba-NLP/gte-Qwen2-1.5B-instruct`](https://huggingface.co/Alibaba-NLP/gte-Qwen2-1.5B-instruct) (1536-dim) — GPU fp16 with automatic CPU fallback.
 - **Vectorstore:** ChromaDB (persistent, on-disk, no external service).
-- **Server:** MCP over stdio (FastMCP); tools `search_comsol_docs`, `list_sources`. The model is pre-warmed in a background thread on `serve` so the first query isn't slow.
+- **Server:** MCP over stdio (FastMCP); tools `search_comsol_docs`, `list_sources`. `serve` is a thin shim that forwards to a shared daemon holding the single model copy (see [Shared daemon](#shared-daemon-one-model-for-all-windows)), pre-warmed so the first query isn't slow.
 - **Self-repairing:** a hash manifest re-embeds only new/changed sources and drops removed ones.
 
 ## Supported source files
@@ -55,7 +55,49 @@ automated even from a machine with neither WSL nor Python.
 .venv/bin/python main.py ingest --rebuild  # force full re-embed
 .venv/bin/python main.py query "..."        # search from the CLI
 .venv/bin/python main.py status            # health check + smoke query
-.venv/bin/python main.py serve             # start the MCP server (stdio)
+.venv/bin/python main.py serve             # start the MCP server (stdio shim)
+.venv/bin/python main.py daemon            # run the shared search daemon (usually auto-spawned)
+.venv/bin/python main.py stop-daemon       # stop the daemon, freeing the model's RAM now
+.venv/bin/python main.py restart-daemon    # stop it; the next query respawns with current code/config
+.venv/bin/python main.py uninstall         # unregister the MCP server + stop the daemon
+```
+
+## Shared daemon (one model for all windows)
+
+MCP uses **stdio**, so every Claude window launches its own `serve` process. If each
+of those loaded the 1.5B model, N open windows would mean N model copies in RAM
+(~700 MB host RSS each, plus a CUDA context per process). To avoid that:
+
+- **`serve` is a thin shim.** It imports no torch/chromadb (stays ~tens of MB) and
+  forwards each tool call over a **Unix socket** to a daemon.
+- **The daemon** (`comsol_clippy/daemon.py`) loads the model + store **once** and is
+  shared by every window. The first shim to start auto-spawns it; the rest connect.
+  A file lock serializes the spawn so a simultaneous launch race produces only one
+  daemon.
+- **Latency vs. RAM:** the daemon pre-warms the model on startup (first query fast),
+  and **idle-exits after 30 min** of no connections (`--idle-timeout`, `0` = never) so
+  the RAM is reclaimed when you stop working. The next `serve` respawns it.
+- **Picks up updates automatically:** the daemon also self-exits (when idle) if
+  `config.toml` or any `comsol_clippy/*.py` changes, so after an update/`ingest` the
+  next query runs fresh code. `setup` additionally calls `restart-daemon` explicitly.
+- **Native Windows fallback:** the daemon needs `AF_UNIX` + `fcntl` (POSIX). On native
+  Windows (the CPU fallback runtime) `serve` loads the model **in-process** instead —
+  the original behaviour. Under WSL (the GPU path, where shared RAM matters) the daemon
+  is always used.
+
+**Runtime files** (socket, lock, pid, log) live under `$XDG_RUNTIME_DIR/comsol-clippy-<hash>/`
+(falling back to `/tmp`), **not** under `data/`. This is deliberate: under WSL the
+project lives on a Windows drive (`/mnt/...`, DrvFs), and `AF_UNIX` `bind()` fails there
+with `Errno 95 Operation not supported`. The `<hash>` is derived from the project root so
+two checkouts don't share a socket. `daemon.log` captures the daemon's startup/errors.
+
+### Protocol
+
+Newline-delimited JSON over the socket (`comsol_clippy/protocol.py`), stdlib only:
+
+```
+request:  {"method": "search"|"list_sources"|"ping", "params": {...}}
+response: {"ok": true, "result": <json>} | {"ok": false, "error": "<message>"}
 ```
 
 ## How re-embedding works
@@ -80,7 +122,8 @@ paths. Changing the model or chunk params triggers a full rebuild on the next `i
 ```
 start.cmd            single cross-platform launcher (root)
 source/              your input PDFs
-comsol_clippy/       package: config, pdf, embeddings, manifest, store, ingest, server, cli
+comsol_clippy/       package: config, pdf, embeddings, manifest, store, ingest,
+                              server, cli, daemon, client, protocol
 main.py              CLI entry (serve | ingest | query | status)
 setup/               setup.sh (Linux/WSL) + setup.ps1 (Windows)
 scripts/             register_mcp.py (safe Claude-config merge)
@@ -110,3 +153,10 @@ A `.bak` is written before each edit; existing servers (e.g. `legalgpt`) are pre
 - **`status` says collection MISSING/empty:** run `main.py ingest`.
 - **CUDA OOM:** lower `[embedding].batch_size` in `config.toml`.
 - **Re-embed everything:** `main.py ingest --rebuild`.
+- **High RAM with several Claude windows:** check `main.py status` shows the daemon
+  `running` (one model copy shared). `main.py stop-daemon` frees it immediately; it
+  also self-exits after 30 min idle. If a query says "backend unavailable", see
+  `$XDG_RUNTIME_DIR/comsol-clippy-*/daemon.log` for the daemon's startup error.
+- **`Errno 95 Operation not supported` in daemon.log:** the socket landed on a Windows
+  drive (DrvFs). It should live under `$XDG_RUNTIME_DIR`/`/tmp`; ensure that env var
+  points at a native-Linux tmpfs.

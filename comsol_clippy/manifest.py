@@ -106,9 +106,9 @@ def compute_plan(
     chunks_present: "callable",  # (chunk_ids) -> bool
 ) -> Plan:
     """Decide what to (re)embed. See plan doc for the algorithm."""
-    from .pdf import list_pdfs
+    from .pdf import list_sources
 
-    present = list_pdfs(source_dir)
+    present = list_sources(source_dir)  # PDFs and text files alike
 
     # Global invalidation -> full rebuild.
     if (

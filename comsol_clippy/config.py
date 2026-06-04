@@ -26,6 +26,7 @@ class EmbeddingConfig:
     max_seq_tokens: int
     batch_size: int
     query_instruction: str
+    instruction_format: str = "qwen-instruct"  # "qwen-instruct" | "none"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class Config:
     chroma_dir: Path
     manifest_path: Path
     collection: str
+    min_relevance: float = 0.0
     raw: dict = field(default_factory=dict, repr=False)
 
     def chunk_params(self) -> dict:
@@ -70,6 +72,7 @@ def load_config(path: Path | None = None) -> Config:
     chunk = raw["chunking"]
     paths = raw["paths"]
     store = raw["store"]
+    search = raw.get("search", {})  # optional section; defaults below
 
     data_dir = _resolve(root, paths["data_dir"])
     return Config(
@@ -79,6 +82,7 @@ def load_config(path: Path | None = None) -> Config:
             max_seq_tokens=int(emb["max_seq_tokens"]),
             batch_size=int(emb["batch_size"]),
             query_instruction=emb["query_instruction"],
+            instruction_format=emb.get("instruction_format", "qwen-instruct"),
         ),
         chunking=ChunkingConfig(
             chunk_tokens=int(chunk["chunk_tokens"]),
@@ -90,5 +94,6 @@ def load_config(path: Path | None = None) -> Config:
         chroma_dir=data_dir / paths["chroma_subdir"],
         manifest_path=data_dir / paths["manifest_name"],
         collection=store["collection"],
+        min_relevance=float(search.get("min_relevance", 0.0)),
         raw=raw,
     )
