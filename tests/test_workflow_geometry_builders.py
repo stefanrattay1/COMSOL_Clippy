@@ -118,3 +118,18 @@ def test_build_bell_oven_layout_exports_svg(tmp_path: Path):
     assert "fill-rule=\"evenodd\"" in text
     assert "coilWindings" in text
     assert len(layout.coil_labels) == 2
+
+
+def test_primitives_create_rectangle_and_difference():
+    from comsol_clippy.workflow.builders import create_difference, create_rectangle
+
+    model = FakeModel()
+    outer = create_rectangle(model, "geometries/geom1", label="outer", pos=(0, 0), size=(1.0, 2.0))
+    hole = create_rectangle(model, "geometries/geom1", label="hole", pos=(0.2, 0.2), size=(0.3, 0.3))
+    create_difference(model, "geometries/geom1", label="ring", primary=outer, subtract=[hole])
+
+    types = [node.feature_type for node in model.created]
+    assert types == ["Rectangle", "Rectangle", "Difference"]
+    assert ("node_1", "size", [1.0, 2.0]) in model.properties or any(
+        name == "size" and value == [1.0, 2.0] for (_, name, value) in model.properties
+    )

@@ -10,6 +10,8 @@ ACTION_REQUIREMENTS: dict[str, set[str]] = {
     "set_parameter": {"name", "value"},
     "set_property": {"node", "name", "value"},
     "create_node": {"node", "arguments"},
+    "create_rectangle": {"geometry", "label", "pos", "size"},
+    "create_difference": {"geometry", "label", "primary", "subtract"},
     "create_bell_oven_geometry": {
         "geometry",
         "coil_count",
@@ -96,6 +98,13 @@ class WorkflowAction:
             return f"set property {args['name']} on {args['node']}"
         if self.kind == "create_node":
             return f"create node under {args['node']} with arguments {args['arguments']}"
+        if self.kind == "create_rectangle":
+            return f"create rectangle {args['label']} in {args['geometry']} at {args['pos']} size {args['size']}"
+        if self.kind == "create_difference":
+            return (
+                f"create difference {args['label']} in {args['geometry']} "
+                f"({args['primary']} minus {args['subtract']})"
+            )
         if self.kind == "create_bell_oven_geometry":
             return (
                 "create axisymmetric bell oven geometry "
@@ -211,11 +220,69 @@ def parse_workflow_action(data: dict[str, Any]) -> WorkflowAction:
             args["targets"] = [targets]
         elif isinstance(targets, list):
             args["targets"] = list(targets)
+    if kind == "create_difference":
+        subtract = args.get("subtract")
+        if isinstance(subtract, (str, int)):
+            args["subtract"] = [subtract]
+        elif isinstance(subtract, list):
+            args["subtract"] = list(subtract)
 
     missing = sorted(name for name in ACTION_REQUIREMENTS[kind] if name not in args)
     if missing:
         raise ValueError(f"workflow action '{kind}' is missing required fields: {', '.join(missing)}")
     return WorkflowAction(kind=kind, args=args)
+
+
+def validate_plan_against_snapshot(plan: "WorkflowPlan", snapshot: Any) -> list[str]:
+    """Return warnings for plan actions that reference nodes absent from the model.
+
+    Pure, ``mph``-free, and conservative: it only flags references it can confidently
+    resolve against the snapshot inventory (studies, meshes, geometries, physics
+    interfaces). Free-form node paths are skipped to avoid false positives.
+    """
+    warnings: list[str] = []
+    geometries = set(_snapshot_list(snapshot, "geometries"))
+    studies = set(_snapshot_list(snapshot, "studies"))
+    meshes = set(_snapshot_list(snapshot, "meshes"))
+    # Geometries created earlier in this same plan are legitimate later references.
+    created_geometries = {
+        str(action.args["geometry"])
+        for action in plan.actions
+        if action.kind in {"create_rectangle", "create_difference", "create_bell_oven_geometry"}
+        and "geometry" in action.args
+    }
+    known_geometries = geometries | created_geometries
+
+    for index, action in enumerate(plan.actions, start=1):
+        args = action.args
+        if action.kind == "solve":
+            study = args.get("study")
+            if study is not None and study not in studies:
+                warnings.append(f"action {index} (solve): study '{study}' not found in model {sorted(studies)}")
+        elif action.kind == "run_mesh":
+            mesh = args.get("mesh")
+            if mesh is not None and mesh not in meshes:
+                warnings.append(f"action {index} (run_mesh): mesh '{mesh}' not found in model {sorted(meshes)}")
+        elif action.kind == "build_geometry":
+            geometry = args.get("geometry")
+            if geometry is not None and geometry not in known_geometries:
+                warnings.append(
+                    f"action {index} (build_geometry): geometry '{geometry}' not found in model {sorted(geometries)}"
+                )
+        elif action.kind in {"create_rectangle", "create_difference"}:
+            geometry = args.get("geometry")
+            if geometry is not None and geometry not in known_geometries:
+                warnings.append(
+                    f"action {index} ({action.kind}): geometry '{geometry}' not found in model {sorted(geometries)}"
+                )
+    return warnings
+
+
+def _snapshot_list(snapshot: Any, name: str) -> list[str]:
+    value = getattr(snapshot, name, None)
+    if not value:
+        return []
+    return [str(item) for item in value]
 
 
 def merge_save_targets(base: SaveTarget, override: SaveTarget | None = None) -> SaveTarget:

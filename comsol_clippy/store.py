@@ -22,6 +22,20 @@ class Store:
             )
         return self._collection
 
+    def reset_collection(self) -> None:
+        """Drop and recreate the collection from scratch.
+
+        A Chroma collection's embedding dimension is fixed at creation, so a full
+        rebuild after the embedding model changes (e.g. 1536-dim -> 2048-dim) must
+        delete the old collection — otherwise upserts fail with "Collection expecting
+        embedding with dimension of N". Deleting a missing collection is a no-op.
+        """
+        try:
+            self.client.delete_collection(self.collection_name)
+        except Exception:
+            pass
+        self._collection = None
+
     def exists(self) -> bool:
         try:
             self.client.get_collection(self.collection_name)

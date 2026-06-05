@@ -101,6 +101,8 @@ def apply_plan(
     plan_path: Path = typer.Argument(..., exists=True, dir_okay=False, help="JSON workflow plan to apply."),
     output: Path | None = typer.Option(None, "--output", help="Optional output .mph path; defaults to in-place save."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the interpreted plan without mutating the model."),
+    strict: bool = typer.Option(False, "--strict", help="Fail if the plan references unknown studies/meshes/geometries."),
+    no_backup: bool = typer.Option(False, "--no-backup", help="Skip the .bak safety copy before editing."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ):
     """Apply a structured workflow JSON plan to a COMSOL model."""
@@ -114,6 +116,8 @@ def apply_plan(
             base_dir=plan_path.parent,
             save_target=save_target,
             dry_run=dry_run,
+            strict=strict,
+            backup=not no_backup,
         )
     finally:
         agent.runtime.shutdown()
@@ -124,6 +128,8 @@ def apply_plan(
 
     for line in result.action_summaries:
         typer.echo(line)
+    for warning in result.validation_warnings:
+        typer.echo(f"WARNING: {warning}")
     if result.saved_to:
         typer.echo(f"Saved to {result.saved_to}")
     elif dry_run:
@@ -149,12 +155,80 @@ def agent_prompt(
         agent.runtime.shutdown()
 
 
+@app.command("run")
+def run_request(
+    model_path: Path = typer.Argument(..., exists=True, dir_okay=False, help="Path to the source .mph model."),
+    request: str = typer.Argument(..., help="Natural-language editing request for the planner."),
+    planner_cmd: str = typer.Option(..., "--planner-cmd", help="Command run as the planner; prompt is piped on stdin, JSON plan read from stdout (e.g. 'claude -p')."),
+    output: Path | None = typer.Option(None, "--output", help="Optional output .mph path; defaults to in-place save."),
+    top_k: int = typer.Option(3, "--top-k", help="How many COMSOL-manual passages to include as context."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Plan and preview without mutating the model."),
+    strict: bool = typer.Option(False, "--strict", help="Fail if the plan references unknown studies/meshes/geometries."),
+    no_backup: bool = typer.Option(False, "--no-backup", help="Skip the .bak safety copy before editing."),
+    repair: bool = typer.Option(False, "--repair", help="Re-plan against reported model problems."),
+    max_attempts: int = typer.Option(2, "--max-attempts", help="Maximum planning attempts when --repair is set."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+):
+    """Plan COMSOL edits with an external planner and execute them end-to-end."""
+    from ..config import load_config
+    from ..server import Engine
+    from .planner import CommandPlanner
+
+    searcher = Engine(load_config()) if top_k > 0 else None
+    planner = CommandPlanner(planner_cmd)
+    agent = WorkflowAgent(MPHRuntime(), searcher=searcher)
+    save_target = SaveTarget(enabled=not dry_run, path=str(output) if output else None)
+    try:
+        if repair:
+            if dry_run:
+                raise typer.BadParameter("--repair cannot be combined with --dry-run")
+            plan, result = agent.run_with_repair(
+                model_path,
+                request,
+                planner,
+                max_attempts=max_attempts,
+                top_k=top_k,
+                save_target=save_target,
+                strict=strict,
+                backup=not no_backup,
+            )
+        else:
+            plan, result = agent.run_with_planner(
+                model_path,
+                request,
+                planner,
+                top_k=top_k,
+                save_target=save_target,
+                dry_run=dry_run,
+                strict=strict,
+                backup=not no_backup,
+            )
+    finally:
+        agent.runtime.shutdown()
+
+    if json_output:
+        typer.echo(json.dumps(result.to_dict(), indent=2, sort_keys=True, default=str))
+        return
+
+    typer.echo(f"Goal: {plan.goal or '(none)'}")
+    for line in result.action_summaries:
+        typer.echo(line)
+    for warning in result.validation_warnings:
+        typer.echo(f"WARNING: {warning}")
+    if result.saved_to:
+        typer.echo(f"Saved to {result.saved_to} (attempts: {result.attempts})")
+    elif dry_run:
+        typer.echo("Dry run only; no changes were written.")
+
+
 @app.command("apply-agent-response")
 def apply_agent_response(
     model_path: Path = typer.Argument(..., exists=True, dir_okay=False, help="Path to the source .mph model."),
     response_path: Path = typer.Argument(..., exists=True, dir_okay=False, help="Text file containing the agent response."),
     output: Path | None = typer.Option(None, "--output", help="Optional output .mph path; defaults to in-place save."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Parse and preview the plan without mutating the model."),
+    strict: bool = typer.Option(False, "--strict", help="Fail if the plan references unknown studies/meshes/geometries."),
+    no_backup: bool = typer.Option(False, "--no-backup", help="Skip the .bak safety copy before editing."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ):
     """Parse an AI-agent response, extract its JSON plan, and apply it."""
@@ -168,6 +242,8 @@ def apply_agent_response(
             base_dir=response_path.parent,
             save_target=save_target,
             dry_run=dry_run,
+            strict=strict,
+            backup=not no_backup,
         )
     finally:
         agent.runtime.shutdown()
@@ -178,6 +254,8 @@ def apply_agent_response(
 
     for line in result.action_summaries:
         typer.echo(line)
+    for warning in result.validation_warnings:
+        typer.echo(f"WARNING: {warning}")
     if result.saved_to:
         typer.echo(f"Saved to {result.saved_to}")
     elif dry_run:

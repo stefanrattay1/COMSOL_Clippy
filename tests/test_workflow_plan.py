@@ -82,3 +82,46 @@ def test_workflow_plan_loads_bell_oven_and_cleanup_actions():
     assert plan.actions[0].kind == "create_bell_oven_geometry"
     assert plan.actions[0].args["coil_count"] == 3
     assert plan.actions[1].args["targets"] == ["coil_body_1"]
+
+class _Snap:
+    def __init__(self, **kw):
+        self.geometries = kw.get("geometries", [])
+        self.studies = kw.get("studies", [])
+        self.meshes = kw.get("meshes", [])
+
+
+def test_validate_plan_warns_on_unknown_references():
+    from comsol_clippy.workflow.plan import validate_plan_against_snapshot
+
+    plan = WorkflowPlan.from_dict(
+        {
+            "actions": [
+                {"kind": "solve", "study": "std9"},
+                {"kind": "run_mesh", "mesh": "mesh9"},
+                {"kind": "build_geometry", "geometry": "geomX"},
+            ]
+        }
+    )
+    snap = _Snap(geometries=["geom1"], studies=["std1"], meshes=["mesh1"])
+
+    warnings = validate_plan_against_snapshot(plan, snap)
+
+    assert len(warnings) == 3
+    assert any("std9" in w for w in warnings)
+
+
+def test_validate_plan_accepts_known_and_plan_created_geometry():
+    from comsol_clippy.workflow.plan import validate_plan_against_snapshot
+
+    plan = WorkflowPlan.from_dict(
+        {
+            "actions": [
+                {"kind": "solve", "study": "std1"},
+                {"kind": "create_rectangle", "geometry": "geomNew", "label": "r", "pos": [0, 0], "size": [1, 1]},
+                {"kind": "build_geometry", "geometry": "geomNew"},
+            ]
+        }
+    )
+    snap = _Snap(geometries=["geom1"], studies=["std1"])
+
+    assert validate_plan_against_snapshot(plan, snap) == []

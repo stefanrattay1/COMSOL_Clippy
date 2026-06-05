@@ -12,3 +12,4 @@ source/
 .pytest_cache/
 .ruff_cache/
 outputs/
+.env

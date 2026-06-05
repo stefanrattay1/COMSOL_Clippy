@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import shutil
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -90,6 +91,31 @@ class WorkflowAgent:
             f"Relevant manual context:\n{manual_block}\n"
         )
 
+    def build_repair_prompt(
+        self,
+        context: "WorkflowContext",
+        problems: list[Any],
+        previous_plan: WorkflowPlan,
+    ) -> str:
+        """Build a follow-up prompt asking the planner to fix reported problems."""
+        problem_block = "\n".join(f"- {problem}" for problem in problems) or "(no specific problems reported)"
+        previous = json.dumps(
+            {
+                "goal": previous_plan.goal,
+                "actions": [{"kind": a.kind, "args": a.args} for a in previous_plan.actions],
+            },
+            indent=2,
+            default=str,
+        )
+        base = self.build_prompt(context)
+        return (
+            base
+            + "\n\nThe previous plan was executed but the model now reports problems.\n"
+            + "Return a corrected JSON plan that resolves them. Use the manual context above.\n\n"
+            + f"Reported problems:\n{problem_block}\n\n"
+            + f"Previous plan that caused these problems:\n{previous}\n"
+        )
+
     def parse_agent_response(self, response: str | dict[str, Any] | WorkflowPlan) -> WorkflowPlan:
         if isinstance(response, WorkflowPlan):
             return response
@@ -107,18 +133,48 @@ class WorkflowAgent:
         base_dir: str | Path | None = None,
         save_target: SaveTarget | None = None,
         dry_run: bool = False,
+        strict: bool = False,
+        backup: bool = True,
     ) -> WorkflowExecutionResult:
+        backup_path = self._make_backup(model_path) if (backup and not dry_run) else None
         model = self.runtime.load_model(model_path)
         try:
-            return self.runtime.apply_plan(
+            result = self.runtime.apply_plan(
                 model,
                 plan,
                 base_dir=base_dir,
                 save_target=save_target,
                 dry_run=dry_run,
+                strict=strict,
             )
+        except Exception:
+            self._restore_backup(model_path, backup_path)
+            raise
         finally:
             self.runtime.release_model(model)
+        self._discard_backup(backup_path)
+        return result
+
+    @staticmethod
+    def _make_backup(model_path: str | Path) -> Path | None:
+        source = Path(model_path)
+        if not source.exists():
+            return None
+        backup_path = source.with_suffix(source.suffix + ".bak")
+        shutil.copy2(source, backup_path)
+        return backup_path
+
+    @staticmethod
+    def _restore_backup(model_path: str | Path, backup_path: Path | None) -> None:
+        if backup_path is None or not backup_path.exists():
+            return
+        shutil.copy2(backup_path, model_path)
+        backup_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _discard_backup(backup_path: Path | None) -> None:
+        if backup_path is not None:
+            backup_path.unlink(missing_ok=True)
 
     def run_response(
         self,
@@ -128,6 +184,8 @@ class WorkflowAgent:
         base_dir: str | Path | None = None,
         save_target: SaveTarget | None = None,
         dry_run: bool = False,
+        strict: bool = False,
+        backup: bool = True,
     ) -> WorkflowExecutionResult:
         plan = self.parse_agent_response(response)
         return self.run_plan(
@@ -136,6 +194,8 @@ class WorkflowAgent:
             base_dir=base_dir,
             save_target=save_target,
             dry_run=dry_run,
+            strict=strict,
+            backup=backup,
         )
 
     def run_with_planner(
@@ -148,6 +208,8 @@ class WorkflowAgent:
         base_dir: str | Path | None = None,
         save_target: SaveTarget | None = None,
         dry_run: bool = False,
+        strict: bool = False,
+        backup: bool = True,
     ) -> tuple[WorkflowPlan, WorkflowExecutionResult]:
         context = self.build_context(model_path, request, top_k=top_k)
         prompt = self.build_prompt(context)
@@ -159,7 +221,59 @@ class WorkflowAgent:
             base_dir=base_dir,
             save_target=save_target,
             dry_run=dry_run,
+            strict=strict,
+            backup=backup,
         )
+        return plan, result
+
+    def run_with_repair(
+        self,
+        model_path: str | Path,
+        request: str,
+        planner: WorkflowPlanner,
+        *,
+        max_attempts: int = 2,
+        top_k: int = 3,
+        base_dir: str | Path | None = None,
+        save_target: SaveTarget | None = None,
+        strict: bool = False,
+        backup: bool = True,
+    ) -> tuple[WorkflowPlan, WorkflowExecutionResult]:
+        """Plan, execute, and re-plan against reported problems up to ``max_attempts``.
+
+        After each real execution the model's reported ``problems`` (captured in the
+        result snapshot) are fed back to the planner alongside fresh manual context,
+        so a convergence error can drive a manual lookup and a corrected plan.
+        """
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be >= 1")
+
+        context = self.build_context(model_path, request, top_k=top_k)
+        prompt = self.build_prompt(context)
+        plan = self.parse_agent_response(planner(prompt, context))
+
+        attempt = 0
+        result: WorkflowExecutionResult | None = None
+        while attempt < max_attempts:
+            attempt += 1
+            result = self.run_plan(
+                model_path,
+                plan,
+                base_dir=base_dir,
+                save_target=save_target,
+                strict=strict,
+                backup=backup,
+            )
+            problems = list(result.snapshot.problems) if result.snapshot else []
+            if not problems or attempt >= max_attempts:
+                break
+            # Re-plan against the problems with fresh manual context for the failure.
+            repair_context = self.build_context(model_path, request, top_k=top_k)
+            repair_prompt = self.build_repair_prompt(repair_context, problems, plan)
+            plan = self.parse_agent_response(planner(repair_prompt, repair_context))
+
+        assert result is not None  # loop runs at least once
+        result = replace(result, attempts=attempt)
         return plan, result
 
     def _manual_context(self, request: str, *, top_k: int) -> list[ManualExcerpt]:

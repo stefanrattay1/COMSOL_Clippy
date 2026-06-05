@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from comsol_clippy.workflow.plan import SaveTarget, WorkflowPlan
 from comsol_clippy.workflow.runtime import MPHRuntime
 
@@ -305,3 +307,69 @@ def test_apply_plan_builds_bell_oven_geometry_and_cleanup(tmp_path: Path):
     assert "Fillet" in created_feature_types
     assert "Repair" in created_feature_types
     assert any(name == "radius" and value == 0.01 for (_, name, value) in model.properties_set)
+
+
+def _runtime_with_loaded_model(tmp_path: Path):
+    model_path = tmp_path / "demo.mph"
+    model_path.write_text("placeholder")
+    model = FakeModel(str(model_path))
+    client = FakeClient(model)
+    runtime = MPHRuntime(client_factory=lambda cores, version: client)
+    return runtime, runtime.load_model(model_path), model
+
+
+def test_apply_plan_composes_primitives(tmp_path: Path):
+    runtime, loaded, model = _runtime_with_loaded_model(tmp_path)
+    plan = WorkflowPlan.from_dict(
+        {
+            "actions": [
+                {"kind": "create_rectangle", "geometry": "geom1", "label": "outer", "pos": [0, 0], "size": [1, 2]},
+                {"kind": "create_rectangle", "geometry": "geom1", "label": "hole", "pos": [0.2, 0.2], "size": [0.3, 0.3]},
+                {"kind": "create_difference", "geometry": "geom1", "label": "ring", "primary": "outer", "subtract": "hole"},
+            ]
+        }
+    )
+
+    runtime.apply_plan(loaded, plan, base_dir=tmp_path)
+
+    types = [node.feature_type for node in model.created_nodes]
+    assert types == ["Rectangle", "Rectangle", "Difference"]
+    assert any(name == "size" and value == [1.0, 2.0] for (_, name, value) in model.properties_set)
+
+
+def test_apply_plan_validation_warns_on_unknown_study(tmp_path: Path):
+    runtime, loaded, _model = _runtime_with_loaded_model(tmp_path)
+    plan = WorkflowPlan.from_dict({"actions": [{"kind": "solve", "study": "std9"}]})
+
+    result = runtime.apply_plan(loaded, plan, base_dir=tmp_path)
+
+    assert any("std9" in w for w in result.validation_warnings)
+
+
+def test_apply_plan_strict_raises_on_unknown_study(tmp_path: Path):
+    from comsol_clippy.workflow.runtime import WorkflowRuntimeError
+
+    runtime, loaded, _model = _runtime_with_loaded_model(tmp_path)
+    plan = WorkflowPlan.from_dict({"actions": [{"kind": "solve", "study": "std9"}]})
+
+    with pytest.raises(WorkflowRuntimeError):
+        runtime.apply_plan(loaded, plan, base_dir=tmp_path, strict=True)
+
+
+def test_dry_run_is_a_preflight_with_warnings_and_no_mutation(tmp_path: Path):
+    runtime, loaded, model = _runtime_with_loaded_model(tmp_path)
+    plan = WorkflowPlan.from_dict(
+        {
+            "actions": [
+                {"kind": "set_parameter", "name": "Q0", "value": "9[W]"},
+                {"kind": "solve", "study": "std9"},
+            ]
+        }
+    )
+
+    result = runtime.apply_plan(loaded, plan, base_dir=tmp_path, dry_run=True)
+
+    assert result.dry_run is True
+    assert model.parameters_map["Q0"] == "50[W]"  # unchanged
+    assert model.saved == []
+    assert any("std9" in w for w in result.validation_warnings)

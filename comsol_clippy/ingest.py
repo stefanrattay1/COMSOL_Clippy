@@ -96,6 +96,10 @@ def run_ingest(cfg: Config, *, force_rebuild: bool = False, dry_run: bool = Fals
 
     to_embed = plan.add + plan.update
     if plan.rebuild_all:
+        # Recreate the collection from scratch: its embedding dimension is fixed at
+        # creation, so a model change (e.g. 1536 -> 2048 dim) requires a fresh collection,
+        # not just re-upserting into the old one. Also clears any stale vectors.
+        store.reset_collection()
         to_embed = present
         # Stale entries for files no longer present were handled via delete above.
 

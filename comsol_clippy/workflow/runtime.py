@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .plan import SaveTarget, WorkflowPlan, merge_save_targets
+from .plan import SaveTarget, WorkflowPlan, merge_save_targets, validate_plan_against_snapshot
 
 
 class WorkflowRuntimeError(RuntimeError):
@@ -48,6 +48,8 @@ class WorkflowExecutionResult:
     saved_to: str | None = None
     snapshot: ModelSnapshot | None = None
     dry_run: bool = False
+    validation_warnings: list[str] = field(default_factory=list)
+    attempts: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -65,6 +67,8 @@ class WorkflowExecutionResult:
             "evaluations": self.evaluations,
             "saved_to": self.saved_to,
             "dry_run": self.dry_run,
+            "validation_warnings": list(self.validation_warnings),
+            "attempts": self.attempts,
         }
         if self.snapshot is not None:
             payload["snapshot"] = self.snapshot.to_dict()
@@ -163,12 +167,22 @@ class MPHRuntime:
         base_dir: str | Path | None = None,
         save_target: SaveTarget | None = None,
         dry_run: bool = False,
+        strict: bool = False,
     ) -> WorkflowExecutionResult:
         base = _default_base_dir(model, base_dir)
         effective_save = merge_save_targets(plan.save, save_target)
         action_summaries: list[str] = []
         evaluations: dict[str, Any] = {}
         geometry_context: dict[str, dict[str, Any]] = {}
+
+        # Preflight: validate plan references against the model as it is now. This
+        # runs for both real and dry runs so a dry run is a usable preflight.
+        entry_snapshot = self.snapshot(model)
+        validation_warnings = validate_plan_against_snapshot(plan, entry_snapshot)
+        if validation_warnings and strict:
+            raise WorkflowRuntimeError(
+                "plan failed validation:\n" + "\n".join(validation_warnings)
+            )
 
         for index, action in enumerate(plan.actions, start=1):
             action_summaries.append(f"{index}. {action.summary()}")
@@ -184,6 +198,35 @@ class MPHRuntime:
                 model.property(args["node"], args["name"], args["value"])
             elif action.kind == "create_node":
                 model.create(args["node"], *list(args["arguments"]))
+            elif action.kind == "create_rectangle":
+                from .builders import create_rectangle
+
+                node = create_rectangle(
+                    model,
+                    f"geometries/{args['geometry']}",
+                    label=str(args["label"]),
+                    pos=tuple(args["pos"]),
+                    size=tuple(args["size"]),
+                )
+                geometry_context.setdefault(str(args["geometry"]), {}).setdefault("features", {})[
+                    str(args["label"])
+                ] = node
+            elif action.kind == "create_difference":
+                from .builders import create_difference
+
+                features = geometry_context.get(str(args["geometry"]), {}).get("features", {})
+                primary = features.get(str(args["primary"]), args["primary"])
+                subtract = [features.get(str(item), item) for item in args["subtract"]]
+                node = create_difference(
+                    model,
+                    f"geometries/{args['geometry']}",
+                    label=str(args["label"]),
+                    primary=primary,
+                    subtract=subtract,
+                )
+                geometry_context.setdefault(str(args["geometry"]), {}).setdefault("features", {})[
+                    str(args["label"])
+                ] = node
             elif action.kind == "create_bell_oven_geometry":
                 from .builders import build_bell_oven_geometry
 
@@ -242,7 +285,7 @@ class MPHRuntime:
         if not dry_run and effective_save.requested:
             saved_to = self._save_model(model, effective_save, base)
 
-        snapshot = None if dry_run else self.snapshot(model)
+        snapshot = entry_snapshot if dry_run else self.snapshot(model)
         return WorkflowExecutionResult(
             plan=plan,
             action_summaries=action_summaries,
@@ -250,6 +293,7 @@ class MPHRuntime:
             saved_to=saved_to,
             snapshot=snapshot,
             dry_run=dry_run,
+            validation_warnings=validation_warnings,
         )
 
     def _save_model(self, model, save_target: SaveTarget, base_dir: Path) -> str | None:
