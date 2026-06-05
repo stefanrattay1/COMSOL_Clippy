@@ -156,11 +156,14 @@ elif command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 if [ "$want_cuda" = "1" ]; then
-  echo "[setup] installiere CUDA (cu121) torch."
-  TORCH_INDEX="--index-url https://download.pytorch.org/whl/cu121"
-  TORCH_CHECK='import sys, torch; sys.exit(0 if getattr(torch.version, "cuda", None) else 1)'
+  echo "[setup] installiere CUDA (cu126) torch."
+  # cu126: cu121 reicht nur bis torch 2.5.x, aber Qwen3-VL-Embedding-2B braucht transformers 5.x,
+  # das torch.float8_e8m0fnu importiert (torch >=2.7). cu126 stellt torch 2.7/2.8-Wheels bereit.
+  TORCH_INDEX="--index-url https://download.pytorch.org/whl/cu126"
+  TORCH_CHECK='import sys, torch; from packaging.version import Version as V; cuda=getattr(torch.version,"cuda",None); sys.exit(0 if (cuda and V(torch.__version__.split("+")[0])>=V("2.7")) else 1)'
 else
   echo "[setup] installiere CPU-torch."
+  TORCH_CHECK='import sys, torch; from packaging.version import Version as V; sys.exit(0 if V(torch.__version__.split("+")[0])>=V("2.7") else 1)'
 fi
 
 # uvs Cache liegt auf dem Linux-Dateisystem, das venv jedoch auf /mnt (DrvFs); Hardlinks
@@ -180,16 +183,18 @@ pip_install() {
 runtime_stack_satisfied() {
   "$PY" -c "$TORCH_CHECK" >/dev/null 2>&1 \
     && "$PY" -c 'import importlib.metadata as m
-for p in ("comsol-clippy","sentence-transformers","transformers","chromadb","pymupdf","mcp","typer"):
+for p in ("comsol-clippy","sentence-transformers","transformers","torchvision","qwen-vl-utils","chromadb","pymupdf","mcp","typer"):
     m.version(p)' >/dev/null 2>&1
 }
 
 install_runtime_stack() {
   if ! "$PY" -c "$TORCH_CHECK" >/dev/null 2>&1; then
-    echo "[setup] installiere torch ..."
+    echo "[setup] installiere torch + torchvision ..."
+    # torchvision ist eine harte Abhaengigkeit von Qwen3-VL-Embedding-2B (der Processor zieht
+    # AutoVideoProcessor auch im reinen Textbetrieb), daher zusammen mit torch installieren.
     # shellcheck disable=SC2086
     pip_install --upgrade pip
-    pip_install --upgrade torch $TORCH_INDEX
+    pip_install --upgrade "torch>=2.7" "torchvision>=0.22" $TORCH_INDEX
   fi
   echo "[setup] installiere Projektabhaengigkeiten ..."
   pip_install -e .

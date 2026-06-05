@@ -31,8 +31,13 @@ def _make_embedder(cache_size: int = 256, instruction_format: str = "none") -> E
     emb._qcache_max = cache_size
     emb.encode_calls = 0
 
-    def fake_encode(texts, *, prompt_name=None):
+    emb.last_prompt_name = None
+    emb.last_prompt = None
+
+    def fake_encode(texts, *, prompt_name=None, prompt=None):
         emb.encode_calls += 1
+        emb.last_prompt_name = prompt_name
+        emb.last_prompt = prompt
         # Deterministic, query-dependent vector so distinct queries differ.
         return [[float(len(t)), float(sum(map(ord, t)) % 97), 0.0, 1.0] for t in texts]
 
@@ -82,6 +87,13 @@ def test_cache_size_zero_disables():
     emb.embed_query("same")
     assert emb.encode_calls == 2  # never cached
     assert len(emb._qcache) == 0
+
+
+def test_st_prompt_query_mode_uses_prompt_argument():
+    emb = _make_embedder(instruction_format="st-prompt")
+    emb.embed_query("same")
+    assert emb.last_prompt == emb.cfg.query_instruction
+    assert emb.last_prompt_name is None
 
 
 def test_returned_vector_is_a_copy():

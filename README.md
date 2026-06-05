@@ -102,6 +102,21 @@ You can ask follow-up questions normally. Done!
 
 ---
 
+## Optional `.mph` workflow automation
+
+This repo now also ships an optional Python workflow suite for opening, inspecting,
+editing, and saving COMSOL `.mph` files through the `mph` package.
+
+- Install the optional extra: `pip install -e ".[workflow]"`
+- Inspect a model: `python main.py workflow inspect my-model.mph`
+- Apply a structured edit plan: `python main.py workflow apply-plan my-model.mph plan.json --output edited.mph`
+- Build a grounded AI-planner prompt: `python main.py workflow agent-prompt my-model.mph "Increase heater power and rerun the study"`
+- Generate a 2D axisymmetric bell-oven geometry for multiple coils with cleanup actions via `create_bell_oven_geometry`, `round_coil_edges`, `apply_fillet`, `apply_chamfer`, and `defeature_geometry`
+
+See **[docs/WORKFLOW.md](docs/WORKFLOW.md)** for the full workflow-plan schema and agent loop.
+
+---
+
 ## Adding or changing manuals later ➕
 
 1. Put new PDFs into the **`source`** folder (or replace/remove old ones).
@@ -123,8 +138,11 @@ Claude.
 - **The setup window showed an error.** Run `start.cmd` once more — it picks up where
   it left off.
 - **Want a quick health check?** The setup ends with a self-check that confirms the
-  helper is working and prints a sample answer. If you ever want to re-run just that
-  check, open this folder in a terminal and run:
+  helper is working and prints a sample answer. If you ever switch embedding models,
+  rerun setup or `main.py ingest --rebuild` first so Chroma matches the new vector
+  size. The current default is `Qwen/Qwen3-VL-Embedding-2B`, used here in text-only
+  mode for COMSOL manuals. To re-run just the health check, open this folder in a
+  terminal and run:
   `.venv/bin/python main.py status` (Windows: `.venv-win\Scripts\python main.py status`).
   It should end with **“all checks passed.”**
 - **“Backend unavailable” or you want to see what the helper is doing.** The background

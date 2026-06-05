@@ -1,7 +1,7 @@
-"""Embedding model wrapper around sentence-transformers / gte-Qwen2-1.5B-instruct.
+"""Embedding model wrapper around sentence-transformers / Qwen3-VL-Embedding.
 
 - GPU (fp16) when CUDA is available, else CPU.
-- Documents are embedded as plain text; queries get the instruction prefix.
+- Documents are embedded as plain text; queries use the configured prompt strategy.
 - Batch size auto-halves on CUDA OOM.
 """
 from __future__ import annotations
@@ -28,7 +28,8 @@ class Embedder:
         self.device = device or detect_device()
         model_kwargs = {}
         if self.device == "cuda":
-            model_kwargs["torch_dtype"] = torch.float16
+            # transformers 5.x renamed `torch_dtype` -> `dtype` (the old name warns).
+            model_kwargs["dtype"] = torch.float16
 
         print(f"[embeddings] loading {cfg.model} on {self.device} ...", file=sys.stderr)
         self.model = SentenceTransformer(
@@ -55,7 +56,13 @@ class Embedder:
         return self.tokenizer.decode(ids, skip_special_tokens=True)
 
     # --- embedding ---
-    def _encode(self, texts: list[str], *, prompt_name: str | None) -> list[list[float]]:
+    def _encode(
+        self,
+        texts: list[str],
+        *,
+        prompt_name: str | None = None,
+        prompt: str | None = None,
+    ) -> list[list[float]]:
         import torch
 
         batch = self.cfg.batch_size
@@ -64,6 +71,7 @@ class Embedder:
                 vecs = self.model.encode(
                     texts,
                     prompt_name=prompt_name,
+                    prompt=prompt,
                     batch_size=batch,
                     normalize_embeddings=True,
                     convert_to_numpy=True,
@@ -94,10 +102,11 @@ class Embedder:
         return vecs
 
     def _embed_query_uncached(self, query: str) -> list[float]:
-        # The "Instruct: <task>\nQuery: " wrapper is specific to instruction-tuned
-        # models like gte-Qwen2. For other models it would be embedded literally and
-        # hurt retrieval, so only apply it when instruction_format == "qwen-instruct".
-        # We pass our own instruction explicitly to control the task description.
+        # Newer Qwen3 VL models accept task steering through SentenceTransformers'
+        # prompt=... argument. Older Qwen/GTE instruct models expect the literal
+        # "Instruct: <task>\nQuery: <q>" wrapper. Plain models just get the raw text.
+        if self.cfg.instruction_format == "st-prompt":
+            return self._encode([query], prompt=self.cfg.query_instruction)[0]
         if self.cfg.instruction_format == "qwen-instruct":
             text = f"Instruct: {self.cfg.query_instruction}\nQuery: {query}"
         else:

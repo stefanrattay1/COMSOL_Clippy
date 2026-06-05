@@ -18,6 +18,7 @@ model = "test-model"
 dim = 1536
 max_seq_tokens = 8192
 batch_size = 8
+instruction_format = "st-prompt"
 query_instruction = "find relevant passages"
 
 [chunking]
@@ -75,6 +76,12 @@ def test_cache_size_defaults_and_loads(tmp_path: Path):
 def test_cache_size_must_be_non_negative(tmp_path: Path):
     bad = VALID.replace("batch_size = 8", "batch_size = 8\ncache_size = -1")
     with pytest.raises(ValueError, match="cache_size must be >= 0"):
+        load_config(_write_config(tmp_path, bad))
+
+
+def test_instruction_format_must_be_supported(tmp_path: Path):
+    bad = VALID.replace('instruction_format = "st-prompt"', 'instruction_format = "bogus"')
+    with pytest.raises(ValueError, match="instruction_format must be one of"):
         load_config(_write_config(tmp_path, bad))
 
 

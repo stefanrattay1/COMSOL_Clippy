@@ -3,7 +3,7 @@
 A local, GPU-accelerated **RAG** system over COMSOL manuals, exposed as an **MCP
 server** so Claude (Desktop or Code) can answer COMSOL questions with cited passages.
 
-- **Embeddings:** [`Alibaba-NLP/gte-Qwen2-1.5B-instruct`](https://huggingface.co/Alibaba-NLP/gte-Qwen2-1.5B-instruct) (1536-dim) — GPU fp16 with automatic CPU fallback.
+- **Embeddings:** [`Qwen/Qwen3-VL-Embedding-2B`](https://huggingface.co/Qwen/Qwen3-VL-Embedding-2B) (2048-dim) — GPU fp16 with automatic CPU fallback. The repo uses it in text-only mode for COMSOL manuals, but the model can also embed images/screenshots if the pipeline grows into multimodal retrieval later.
 - **Vectorstore:** ChromaDB (persistent, on-disk, no external service).
 - **Server:** MCP over stdio (FastMCP); tools `search_comsol_docs`, `list_sources`. `serve` is a thin shim that forwards to a shared daemon holding the single model copy (see [Shared daemon](#shared-daemon-one-model-for-all-windows)), pre-warmed so the first query isn't slow.
 - **Self-repairing:** a hash manifest re-embeds only new/changed sources and drops removed ones.
@@ -70,7 +70,7 @@ automated even from a machine with neither WSL nor Python.
 ## Shared daemon (one model for all windows)
 
 MCP uses **stdio**, so every Claude window launches its own `serve` process. If each
-of those loaded the 1.5B model, N open windows would mean N model copies in RAM
+of those loaded the embedding model, N open windows would mean N model copies in RAM
 (~700 MB host RSS each, plus a CUDA context per process). To avoid that:
 
 - **`serve` is a thin shim.** It imports no torch/chromadb (stays ~tens of MB) and
@@ -128,7 +128,7 @@ paths. Changing the model or chunk params triggers a full rebuild on the next `i
 start.cmd            single cross-platform launcher (root)
 source/              your input PDFs
 comsol_clippy/       package: config, pdf, embeddings, manifest, store, ingest,
-                              server, cli, daemon, client, protocol
+                              server, cli, daemon, client, protocol, workflow/
 main.py              CLI entry (serve | ingest | query | status)
 setup/               setup.sh (Linux/WSL) + setup.ps1 (Windows)
 scripts/             register_mcp.py (safe Claude-config merge)
@@ -137,6 +137,25 @@ docs/                this file
 config.toml          tunable settings
 pyproject.toml       dependencies
 ```
+
+## Optional `.mph` workflow suite
+
+`comsol_clippy/workflow/` is an optional automation layer around the external
+`mph` package. It is deliberately isolated from the default RAG path so the light
+test suite and basic setup do not require COMSOL/JPype.
+
+- `workflow/runtime.py` lazily creates an `mph` client, loads/snapshots models,
+  applies structured edits, and saves `.mph` files.
+- `workflow/plan.py` defines the JSON plan schema used by both hand-authored plans
+  and AI-generated plans.
+- `workflow/agent.py` builds a planner prompt from the user request, current model
+  snapshot, and optional manual search hits from the existing RAG engine.
+- `workflow/cli.py` exposes `python main.py workflow ...` commands for inspect,
+  create, apply-plan, agent-prompt, and apply-agent-response.
+
+The planner/agent integration is intentionally provider-agnostic: this repo builds
+the grounded prompt and parses the resulting JSON plan, but does not hard-code a
+specific hosted LLM dependency.
 
 ## MCP tools
 
@@ -158,14 +177,10 @@ A `.bak` is written before each edit; existing servers (e.g. `legalgpt`) are pre
 - **`status` says collection MISSING/empty:** run `main.py ingest`.
 - **CUDA OOM:** lower `[embedding].batch_size` in `config.toml`.
 - **Re-embed everything:** `main.py ingest --rebuild`.
-- **`hf_xet.download_files() is deprecated` on model download:** harmless. The
-  embedding model's `trust_remote_code` reads `config.rope_theta` (removed in
-  transformers 5.x), so `transformers` is pinned `<4.46`, which transitively caps
-  `huggingface_hub <1.0` — and that old hub still calls the deprecated Xet API.
-  We set `HF_HUB_DISABLE_XET=1` (in `comsol_clippy/__init__.py` and the setup
-  scripts) to route around it via plain HTTPS, so you shouldn't see it. Upgrading
-  the stack to silence it at the source isn't possible without swapping the model
-  (hub ≥1.0 requires transformers ≥5, which the model doesn't support).
+- **Hugging Face model download is flaky or slow:** the setup exports
+  `HF_HUB_DISABLE_XET=1` so downloads stay on the plain HTTPS path instead of the
+  Xet transport. That trims one moving part from setup and avoids Xet-specific
+  failures while fetching the embedding model.
 - **High RAM with several Claude windows:** check `main.py status` shows the daemon
   `running` (one model copy shared). `main.py stop-daemon` frees it immediately; it
   also self-exits after 30 min idle. If a query says "backend unavailable", see

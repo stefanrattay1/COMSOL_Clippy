@@ -22,13 +22,15 @@ jobs:
 
       - name: Install dev tooling (no heavy ML deps)
         # The pure-logic tests import only stdlib-backed modules (torch / chromadb /
-        # pymupdf imports are all lazy), so we deliberately install just pytest + ruff.
+        # pymupdf imports are all lazy), so install the package itself without deps
+        # and add only the test/lint tooling needed here.
         run: |
           python -m pip install --upgrade pip
-          pip install pytest ruff "tomli; python_version < '3.11'"
+          python -m pip install --no-deps -e .
+          python -m pip install pytest ruff "tomli; python_version < '3.11'"
 
       - name: Lint
-        run: ruff check .
+        run: python -m ruff check .
 
       - name: Test
-        run: pytest
+        run: python -m pytest

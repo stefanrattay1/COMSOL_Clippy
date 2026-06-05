@@ -4,8 +4,13 @@ from __future__ import annotations
 import typer
 
 from .config import load_config
+from .workflow.cli import app as workflow_app
 
-app = typer.Typer(add_completion=False, help="COMSOL Clippy — RAG over COMSOL manuals.")
+app = typer.Typer(
+    add_completion=False,
+    help="COMSOL Clippy — RAG over COMSOL manuals plus optional .mph workflow automation.",
+)
+app.add_typer(workflow_app, name="workflow")
 
 
 @app.command()

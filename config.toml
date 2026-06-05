@@ -2,17 +2,18 @@
 # unless absolute. Edit and re-run setup / `main.py ingest` to apply.
 
 [embedding]
-model = "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
-dim = 1536
+model = "Qwen/Qwen3-VL-Embedding-2B"
+dim = 2048
 max_seq_tokens = 8192          # model supports 32k; capped for memory/speed
 batch_size = 8                 # auto-halves on OOM (CUDA or CPU) down to 1
 # How queries are formatted before embedding:
-#   "qwen-instruct" -> wrap as "Instruct: <task>\nQuery: <q>" (for gte-Qwen2 instruct models)
-#   "none"          -> embed the raw query (for non-instruct models)
-instruction_format = "qwen-instruct"
+#   "st-prompt"      -> pass query_instruction via SentenceTransformers' prompt=...
+#   "qwen-instruct"  -> wrap as "Instruct: <task>\nQuery: <q>" for older Qwen/GTE models
+#   "none"           -> embed the raw query (for non-instruct models)
+instruction_format = "st-prompt"
 # Task description used for the query instruction prefix (documents get none).
-# Only used when instruction_format = "qwen-instruct".
-query_instruction = "Given a question about COMSOL Multiphysics, retrieve relevant passages from the user manuals that answer it"
+# Used when instruction_format is "st-prompt" or "qwen-instruct".
+query_instruction = "Retrieve the COMSOL manual passages that best answer the user's question."
 # Bounded LRU cache of query-text -> embedding vector in the long-lived daemon, so a
 # repeated/iterated question skips re-running the model. 0 disables caching.
 cache_size = 256

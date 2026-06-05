@@ -6,6 +6,7 @@ Usage:
     python main.py ingest             # build/repair the vectorstore (incremental)
     python main.py query "..."        # standalone search from the CLI
     python main.py status             # environment + store health check
+    python main.py workflow ...       # inspect/edit/save COMSOL .mph files
 """
 from comsol_clippy.cli import app
 

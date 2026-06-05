@@ -273,8 +273,8 @@ if ($DeviceOverride -eq "gpu") {
 # Keep the setup window readable and downloads resilient (see setup.sh for rationale).
 $env:HF_HUB_DOWNLOAD_TIMEOUT = "30"
 $env:HF_HUB_DISABLE_PROGRESS_BARS = "1"
-# Plain HTTPS download path, not Xet — avoids the deprecated hf_xet warning from the
-# pinned old huggingface_hub (see setup.sh / comsol_clippy/__init__.py).
+# Plain HTTPS download path, not Xet — avoids Xet-specific download failures during
+# setup (see setup.sh / comsol_clippy/__init__.py).
 $env:HF_HUB_DISABLE_XET = "1"
 $Venv = Join-Path $ProjectDir ".venv-win"
 $Py = Join-Path $Venv "Scripts\python.exe"
@@ -452,10 +452,15 @@ Please install Python 3.10+ from https://www.python.org/downloads/windows/
 }
 
 function Install-ProjectRuntime {
-  if (-not (Test-PythonProbe $Py "import torch")) {
-    Write-Host "[setup] installing CPU torch ..."
+  # Require torch >=2.7: transformers 5.x (needed so Qwen3-VL-Embedding-2B loads its weights
+  # instead of random-initialising) imports torch.float8_e8m0fnu, which only exists in 2.7+.
+  $torchOk = 'import sys, torch; from packaging.version import Version as V; sys.exit(0 if V(torch.__version__.split("+")[0])>=V("2.7") else 1)'
+  if (-not (Test-PythonProbe $Py $torchOk)) {
+    Write-Host "[setup] installing CPU torch + torchvision ..."
+    # torchvision is a HARD dependency of the model (its processor pulls in AutoVideoProcessor
+    # even for text-only use), so install it alongside torch.
     Pip-Install --upgrade pip
-    Pip-Install --upgrade torch
+    Pip-Install --upgrade "torch>=2.7" "torchvision>=0.22"
   }
   Write-Host "[setup] installing project dependencies ..."
   Pip-Install -e .

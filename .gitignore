@@ -11,3 +11,4 @@ source/
 .setup.lock
 .pytest_cache/
 .ruff_cache/
+outputs/

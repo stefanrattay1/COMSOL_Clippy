@@ -1,7 +1,7 @@
 """Daemon/shim plumbing tests — no torch/chromadb (CI stays light).
 
 We exercise the wire protocol and the daemon's request dispatch by injecting a
-fake engine, so nothing here loads the 1.5B model or ChromaDB.
+fake engine, so nothing here loads the embedding model or ChromaDB.
 """
 from __future__ import annotations
 

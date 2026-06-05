@@ -3,7 +3,7 @@
 Why this exists
 ---------------
 The MCP transport is stdio, so every Claude window launches its own ``serve``
-process. Loading the 1.5B model in each of those means N model copies (~700 MB
+process. Loading the embedding model in each of those means N model copies
 each) for N open windows. Instead, ``serve`` is now a thin shim that forwards
 tool calls over a Unix socket to *this* daemon, which loads the model exactly
 once and is shared by every window.

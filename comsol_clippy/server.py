@@ -1,7 +1,7 @@
 """FastMCP server exposing COMSOL doc search over stdio.
 
 The embedding model and store are loaded lazily on first tool call so the stdio
-handshake isn't blocked by the 1.5B model load.
+handshake isn't blocked by the model load.
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ class Engine:
     """Lazily-initialized search engine shared by the MCP server and the CLI.
 
     Loading is guarded by a lock so a background pre-warm and the first real query
-    can't load the 1.5B model twice; whichever arrives second just waits.
+    can't load the embedding model twice; whichever arrives second just waits.
     """
 
     def __init__(self, cfg: Config | None = None):

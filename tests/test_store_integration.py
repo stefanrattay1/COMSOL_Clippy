@@ -2,7 +2,7 @@
 
 These hit a *real* ChromaDB persistent client (in a tmp dir) but use hand-built
 vectors instead of the embedding model, so they need `chromadb` installed but not
-torch / sentence-transformers / the 1.5B model.
+torch / sentence-transformers / the real embedding model.
 
 Opt-in: marked `integration` and deselected by default (see pyproject). Run with
 `pytest -m integration`. They `importorskip("chromadb")` so they skip cleanly if

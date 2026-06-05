@@ -1,7 +1,7 @@
 """Full end-to-end integration: ingest a tiny corpus, then search it.
 
 This is the heaviest test in the suite — it loads the real embedding model
-(torch + sentence-transformers + the ~1.5B model download/load) and a real
+(torch + sentence-transformers + the model download/load) and a real
 ChromaDB. So it is gated twice:
 
   * marked `integration` (deselected by default), and

@@ -1,15 +1,24 @@
 [project]
 name = "comsol-clippy"
 version = "0.1.0"
-description = "Local RAG vectorstore + MCP server over COMSOL manuals (gte-Qwen2-1.5B-instruct + ChromaDB)"
+description = "Local RAG vectorstore + MCP server over COMSOL manuals (Qwen3-VL-Embedding-2B + ChromaDB)"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
     # torch is installed separately by the setup scripts (CUDA wheel in WSL, CPU on Windows).
-    # transformers/sentence-transformers are pinned to versions compatible with torch 2.5.x:
-    # newer releases reference torch.float8_e8m0fnu (torch >=2.7) and fail to import.
-    "sentence-transformers>=3.0,<3.4",
-    "transformers>=4.44,<4.46",
+    # Qwen3-VL-Embedding-2B needs the newer multimodal stack:
+    #   - transformers >=5.2: the checkpoint stores its weights under a `model.` prefix
+    #     that transformers 4.x's Qwen3VLModel does NOT map, so 4.x silently RANDOM-INITS
+    #     the whole network (embeddings become noise). 5.2+ loads the weights correctly.
+    #   - transformers 5.x imports torch.float8_e8m0fnu, which only exists in torch >=2.7,
+    #     so the setup scripts must install torch >=2.7 (we verified torch 2.8.0). torch 2.5.x
+    #     can't even import transformers 5.
+    #   - torchvision is a HARD dependency: the model's processor pulls in AutoVideoProcessor
+    #     (requires torchvision) even for text-only use, so loading fails without it.
+    "sentence-transformers>=5.4,<6",
+    "transformers>=5.2,<6",
+    "torchvision>=0.22",
+    "qwen-vl-utils>=0.0.14,<1",
     # Conservative upper bounds guard against a surprise major break; they're set
     # above the versions currently in use (chromadb 1.x, pymupdf/mcp 1.x, typer 0.x).
     "chromadb>=0.5,<2",
@@ -30,6 +39,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
 ]
+workflow = [
+    "mph>=1.3,<2",
+]
 
 [project.scripts]
 comsol-clippy = "comsol_clippy.cli:app"
@@ -39,7 +51,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["comsol_clippy"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["comsol_clippy*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

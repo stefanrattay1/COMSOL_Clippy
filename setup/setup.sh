@@ -67,10 +67,9 @@ trap 'fail "setup stopped on an unexpected error (line $LINENO)." "Scroll up for
 # download errors and retries instead of hanging), and no tqdm progress-bar spam.
 export HF_HUB_DOWNLOAD_TIMEOUT=30
 export HF_HUB_DISABLE_PROGRESS_BARS=1
-# Use the plain HTTPS download path, not Xet: the pinned (old) huggingface_hub still
-# calls the deprecated hf_xet.download_files(), which spams a DeprecationWarning on
-# every model fetch. Disabling Xet avoids that code path. (Also set centrally in
-# comsol_clippy/__init__.py; exported here so any direct HF call during setup is covered.)
+# Use the plain HTTPS download path, not Xet, to avoid Xet-specific download failures
+# during setup. (Also set centrally in comsol_clippy/__init__.py; exported here so any
+# direct HF call during setup is covered.)
 export HF_HUB_DISABLE_XET=1
 
 echo "=============================================="
@@ -153,11 +152,16 @@ elif command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 if [ "$want_cuda" = "1" ]; then
-  echo "[setup] installing CUDA (cu121) torch."
-  TORCH_INDEX="--index-url https://download.pytorch.org/whl/cu121"
-  TORCH_CHECK='import sys, torch; sys.exit(0 if getattr(torch.version, "cuda", None) else 1)'
+  echo "[setup] installing CUDA (cu126) torch."
+  # cu126: cu121 tops out at torch 2.5.x, but Qwen3-VL-Embedding-2B needs transformers 5.x,
+  # which imports torch.float8_e8m0fnu (torch >=2.7). cu126 hosts torch 2.7/2.8 wheels.
+  TORCH_INDEX="--index-url https://download.pytorch.org/whl/cu126"
+  # CUDA torch must also be >=2.7 (the float8 symbol); guard against a stale pre-2.7 install.
+  TORCH_CHECK='import sys, torch; from packaging.version import Version as V; cuda=getattr(torch.version,"cuda",None); sys.exit(0 if (cuda and V(torch.__version__.split("+")[0])>=V("2.7")) else 1)'
 else
   echo "[setup] installing CPU torch."
+  # CPU torch must also be >=2.7 so transformers 5.x can import.
+  TORCH_CHECK='import sys, torch; from packaging.version import Version as V; sys.exit(0 if V(torch.__version__.split("+")[0])>=V("2.7") else 1)'
 fi
 
 # uv's cache lives on the Linux fs while the venv is on /mnt (DrvFs); hardlinks across
@@ -175,16 +179,19 @@ pip_install() {
 runtime_stack_satisfied() {
   "$PY" -c "$TORCH_CHECK" >/dev/null 2>&1 \
     && "$PY" -c 'import importlib.metadata as m
-for p in ("comsol-clippy","sentence-transformers","transformers","chromadb","pymupdf","mcp","typer"):
+for p in ("comsol-clippy","sentence-transformers","transformers","torchvision","qwen-vl-utils","chromadb","pymupdf","mcp","typer"):
     m.version(p)' >/dev/null 2>&1
 }
 
 install_runtime_stack() {
   if ! "$PY" -c "$TORCH_CHECK" >/dev/null 2>&1; then
-    echo "[setup] installing torch ..."
+    echo "[setup] installing torch + torchvision ..."
+    # torchvision is a HARD dependency of Qwen3-VL-Embedding-2B (its processor pulls in
+    # AutoVideoProcessor even for text-only use), so install it alongside torch from the
+    # same index to keep the CUDA build flavours matched.
     # shellcheck disable=SC2086
     pip_install --upgrade pip
-    pip_install --upgrade torch $TORCH_INDEX
+    pip_install --upgrade "torch>=2.7" "torchvision>=0.22" $TORCH_INDEX
   fi
   echo "[setup] installing project dependencies ..."
   pip_install -e .

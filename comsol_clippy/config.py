@@ -26,7 +26,7 @@ class EmbeddingConfig:
     max_seq_tokens: int
     batch_size: int
     query_instruction: str
-    instruction_format: str = "qwen-instruct"  # "qwen-instruct" | "none"
+    instruction_format: str = "qwen-instruct"  # "st-prompt" | "qwen-instruct" | "none"
     cache_size: int = 256  # bounded LRU of query->embedding; 0 disables caching
 
 
@@ -87,6 +87,11 @@ class Config:
             problems.append(f"[embedding].max_seq_tokens must be >= 1 (got {e.max_seq_tokens})")
         if e.cache_size < 0:
             problems.append(f"[embedding].cache_size must be >= 0 (got {e.cache_size})")
+        if e.instruction_format not in {"st-prompt", "qwen-instruct", "none"}:
+            problems.append(
+                "[embedding].instruction_format must be one of "
+                f"st-prompt, qwen-instruct, none (got {e.instruction_format!r})"
+            )
         if not 0.0 <= self.min_relevance <= 1.0:
             problems.append(
                 f"[search].min_relevance must be in [0.0, 1.0] (got {self.min_relevance})"
